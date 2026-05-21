@@ -16,6 +16,8 @@
     temp_files:    { index: 5, name: 'Geçici Dosyalar' },
     developer:     { index: 6, name: 'Geliştirici' },
     trash:         { index: 7, name: 'Çöp Kutusu' },
+    browser_cache: { index: 8, name: 'Tarayıcı Cache' },
+    browser_full:  { index: 9, name: 'Tarayıcı Tüm Veri (Oturumlar Kapanır!)' },
   };
 
   /* ── DOM References ─────────────────────────────────────── */

@@ -22,12 +22,41 @@ TOTAL_ITEMS=0
 JSON_MODE=false
 CLEAN_RESULTS=()
 
+# Tarayıcı cache dizinleri (~/Library/Caches içindeki üst-seviye klasör adları)
+BROWSER_CACHE_TOPDIRS=(
+  "com.apple.Safari"
+  "com.apple.WebKit.Networking"
+  "Google"
+  "com.google.Chrome"
+  "org.mozilla.firefox"
+  "Firefox"
+  "com.brave.Browser"
+  "com.microsoft.edgemac"
+  "Microsoft Edge"
+  "com.operasoftware.Opera"
+  "com.arc.app"
+  "com.vivaldi.Vivaldi"
+)
+
+# Tarayıcı profil dizinleri (çerezler, geçmiş vb.)
+BROWSER_FULL_DIRS=(
+  "$HOME/Library/Safari"
+  "$HOME/Library/Cookies"
+  "$HOME/Library/Application Support/Google/Chrome"
+  "$HOME/Library/Application Support/Firefox"
+  "$HOME/Library/Application Support/BraveSoftware"
+  "$HOME/Library/Application Support/Microsoft Edge"
+  "$HOME/Library/Application Support/com.operasoftware.Opera"
+  "$HOME/Library/Application Support/Arc"
+)
+
 # Paralel diziler — bash 3.2 (Monterey dahil tüm macOS) ile uyumlu
-CAT_IDS=(user_cache system_cache app_leftovers logs temp_files developer trash)
+CAT_IDS=(user_cache system_cache app_leftovers logs temp_files developer trash browser_cache browser_full)
 CAT_NAMES=("Kullanıcı Cache" "Sistem Cache" "Uygulama Kalıntıları" \
-            "Loglar" "Geçici Dosyalar" "Geliştirici" "Çöp Kutusu")
-CAT_SIZES=(0 0 0 0 0 0 0)
-CAT_NEEDS_SUDO=(0 1 0 0 0 0 0)
+            "Loglar" "Geçici Dosyalar" "Geliştirici" "Çöp Kutusu" \
+            "Tarayıcı Cache" "Tarayıcı Tüm Veri")
+CAT_SIZES=(0 0 0 0 0 0 0 0 0)
+CAT_NEEDS_SUDO=(0 1 0 0 0 0 0 0 0)
 
 # ─── UI ─────────────────────────────────────────────────────────────────────
 header() {
@@ -163,11 +192,22 @@ sudo_check() {
   fi
 }
 
+# ─── Tarayıcı Dizin Kontrolü ─────────────────────────────────────────────────
+is_browser_cache_dir() {
+  local name; name=$(basename "$1")
+  local d
+  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
+    [[ "$name" == "$d" ]] && return 0
+  done
+  return 1
+}
+
 # ─── Tarama ─────────────────────────────────────────────────────────────────
 scan_user_cache() {
   local total=0
   local item
   while IFS= read -r -d '' item; do
+    is_browser_cache_dir "$item" && continue
     local s=0
     s=$(get_size_bytes "$item") || s=0
     total=$((total + s))
@@ -248,10 +288,43 @@ scan_trash() {
   CAT_SIZES[6]=$s
 }
 
+scan_browser_cache() {
+  local total=0
+  local d
+  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
+    local path="$HOME/Library/Caches/$d"
+    [ -e "$path" ] || continue
+    local s=0
+    s=$(get_size_bytes "$path") || s=0
+    total=$((total + s))
+  done
+  CAT_SIZES[7]=$total
+}
+
+scan_browser_full() {
+  local total=0
+  local d
+  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
+    local path="$HOME/Library/Caches/$d"
+    [ -e "$path" ] || continue
+    local s=0
+    s=$(get_size_bytes "$path") || s=0
+    total=$((total + s))
+  done
+  for d in "${BROWSER_FULL_DIRS[@]}"; do
+    [ -e "$d" ] || continue
+    local s=0
+    s=$(get_size_bytes "$d") || s=0
+    total=$((total + s))
+  done
+  CAT_SIZES[8]=$total
+}
+
 scan_all() {
   header "🔍 Taranıyor..."
   local fns=(scan_user_cache scan_system_cache scan_app_leftovers \
-             scan_logs scan_temp_files scan_developer scan_trash)
+             scan_logs scan_temp_files scan_developer scan_trash \
+             scan_browser_cache scan_browser_full)
   local i
   for i in "${!fns[@]}"; do
     echo -ne "  ${DIM}${CAT_NAMES[$i]}...${NC}\r"
@@ -291,11 +364,36 @@ print_scan_table() {
 
 # ─── Temizleme Fonksiyonları ─────────────────────────────────────────────────
 clean_user_cache() {
-  header "🗑️  Kullanıcı Cache Temizleniyor"
+  header "🗑️  Kullanıcı Cache Temizleniyor (Tarayıcılar Hariç)"
   local item
   while IFS= read -r -d '' item; do
+    is_browser_cache_dir "$item" && continue
     safe_rm_contents "$item" "$(basename "$item")"
   done < <(find "$HOME/Library/Caches" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+}
+
+clean_browser_cache() {
+  header "🌐 Tarayıcı Cache Temizleniyor (Çerezler Korunur)"
+  local d
+  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
+    local path="$HOME/Library/Caches/$d"
+    [ -e "$path" ] || continue
+    safe_rm_contents "$path" "$d"
+  done
+}
+
+clean_browser_full() {
+  header "⚠️  Tarayıcı Tüm Veriler Temizleniyor (Oturumlar Kapanacak!)"
+  local d
+  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
+    local path="$HOME/Library/Caches/$d"
+    [ -e "$path" ] || continue
+    safe_rm_contents "$path" "$d"
+  done
+  for d in "${BROWSER_FULL_DIRS[@]}"; do
+    [ -e "$d" ] || continue
+    safe_rm_contents "$d" "$(basename "$d")"
+  done
 }
 
 clean_system_cache() {
@@ -515,7 +613,8 @@ category_selector() {
 run_clean() {
   local selected_indices=("$@")
   local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
-                clean_logs clean_temp_files clean_developer clean_trash)
+                clean_logs clean_temp_files clean_developer clean_trash \
+                clean_browser_cache clean_browser_full)
   local idx
   for idx in "${selected_indices[@]}"; do
     local real_idx=$((idx - 1))
@@ -611,7 +710,8 @@ do_clean_json() {
 
   # Temizleme — interaktif olmayan modda uygulama kalıntıları atlanır
   local fn_map=(clean_user_cache clean_system_cache "" \
-                clean_logs clean_temp_files "" clean_trash)
+                clean_logs clean_temp_files "" clean_trash \
+                clean_browser_cache clean_browser_full)
   # Not: index 2 (app_leftovers) ve 5 (developer) interaktif, web'den atlanır
 
   local idx
@@ -745,7 +845,7 @@ main() {
       echo ""
       warn "Tüm kategoriler temizlenecek. Bu işlem geri alınamaz."
       confirm "Devam etmek istiyor musunuz?" || { echo ""; info "İptal edildi."; exit 0; }
-      run_clean 1 2 3 4 5 6 7
+      run_clean 1 2 3 4 5 6 7 8 9
       ;;
     2)
       local raw_selection; raw_selection=$(category_selector)

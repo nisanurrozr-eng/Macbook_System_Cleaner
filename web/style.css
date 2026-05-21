@@ -392,6 +392,44 @@ body::before {
   box-shadow: var(--shadow-card), 0 0 20px var(--accent-glow);
 }
 
+.category-card.card-danger {
+  border-color: rgba(255, 69, 58, .25);
+}
+
+.category-card.card-danger::before {
+  background: linear-gradient(135deg, rgba(255, 69, 58, .06) 0%, transparent 50%);
+}
+
+.category-card.card-danger .card-icon-wrap {
+  background: linear-gradient(135deg, rgba(255, 69, 58, .18) 0%, rgba(255, 69, 58, .06) 100%);
+  box-shadow: 0 2px 12px rgba(255, 69, 58, .12);
+}
+
+.category-card.card-danger:hover {
+  border-color: rgba(255, 69, 58, .5);
+}
+
+.category-card.card-danger.selected {
+  border-color: var(--danger);
+  box-shadow: var(--shadow-card), 0 0 20px var(--danger-glow);
+}
+
+.card-warn-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: .68rem;
+  font-weight: 600;
+  color: var(--danger);
+  background: rgba(255, 69, 58, .12);
+  border: 1px solid rgba(255, 69, 58, .25);
+  border-radius: 4px;
+  padding: 2px 7px;
+  margin-top: 4px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
 .card-top {
   display: flex;
   align-items: flex-start;
@@ -820,6 +858,8 @@ body::before {
 .card-enter:nth-child(5) { animation-delay: .25s; }
 .card-enter:nth-child(6) { animation-delay: .30s; }
 .card-enter:nth-child(7) { animation-delay: .35s; }
+.card-enter:nth-child(8) { animation-delay: .40s; }
+.card-enter:nth-child(9) { animation-delay: .45s; }
 
 .size-animate {
   animation: countUp .4s var(--ease);
