@@ -130,7 +130,21 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             return
 
         cat_str = ",".join(str(c) for c in categories)
-        data, err = self._run_script(["--clean-json", cat_str])
+        args = ["--clean-json", cat_str]
+
+        app_leftovers_selected = payload.get("app_leftovers_selected", [])
+        if app_leftovers_selected and isinstance(app_leftovers_selected, list):
+            args += ["--app-leftovers", ",".join(str(x) for x in app_leftovers_selected)]
+
+        browser_full_selected = payload.get("browser_full_selected", [])
+        if browser_full_selected and isinstance(browser_full_selected, list):
+            args += ["--browser-full-sub", ",".join(str(x) for x in browser_full_selected)]
+
+        developer_selected = payload.get("developer_selected", [])
+        if developer_selected and isinstance(developer_selected, list):
+            args += ["--developer-sub", ",".join(str(x) for x in developer_selected)]
+
+        data, err = self._run_script(args)
         if err:
             self._send_error_json(f"Temizleme hatası: {err}")
         else:

@@ -113,6 +113,19 @@
     return selected;
   }
 
+  function getSelectedSubitems(categoryKey) {
+    const subitems = [];
+    const container = document.querySelector(`#subitems_${categoryKey}`);
+    if (container) {
+      container.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+        if (cb.checked) {
+          subitems.push(cb.dataset.subId);
+        }
+      });
+    }
+    return subitems;
+  }
+
   /* ── API Calls ──────────────────────────────────────────── */
   async function apiFetch(url, options = {}) {
     try {
@@ -163,6 +176,7 @@
     setLoadingState(btnScan, true);
     btnClean.disabled = true;
     resultsPanel.classList.remove('visible');
+    $$('.subitems-container').forEach(el => el.remove());
     termLog('Tarama başlatılıyor…', 'info');
 
     try {
@@ -205,6 +219,76 @@
         setTimeout(() => badge.classList.remove('size-animate'), 500);
 
         termLog(`  ${CATEGORY_MAP[key]?.name || key}: ${sizeText}`, '');
+
+        // Render sub-items if present
+        if (info.subitems && info.subitems.length > 0) {
+          const card = document.querySelector(`.category-card[data-category="${key}"]`);
+          if (card) {
+            const container = document.createElement('div');
+            container.className = 'subitems-container';
+            container.id = `subitems_${key}`;
+
+            info.subitems.forEach((sub) => {
+              const row = document.createElement('div');
+              row.className = 'subitem-row';
+
+              let checkedAttr = '';
+              if (key === 'app_leftovers') {
+                checkedAttr = sub.is_orphaned ? 'checked' : '';
+              } else if (key === 'developer') {
+                checkedAttr = 'checked';
+              } else if (key === 'browser_full') {
+                checkedAttr = '';
+              }
+
+              let badgeHtml = '';
+              if (key === 'app_leftovers') {
+                const label = sub.is_orphaned ? 'Kalıntı' : 'Yüklü';
+                const cls = sub.is_orphaned ? 'orphaned' : 'installed';
+                badgeHtml = `<span class="subitem-badge ${cls}">${label}</span>`;
+              }
+
+              row.innerHTML = `
+                <div class="subitem-left">
+                  <label class="subitem-checkbox-label">
+                    <input type="checkbox" data-sub-id="${sub.id}" ${checkedAttr}>
+                    <span class="subitem-name" title="${sub.name}">${sub.name}</span>
+                  </label>
+                  ${badgeHtml}
+                </div>
+                <span class="subitem-size">${sub.size_human}</span>
+              `;
+              container.appendChild(row);
+            });
+
+            const cardMeta = card.querySelector('.card-meta');
+            card.insertBefore(container, cardMeta);
+
+            const parentCheckbox = card.querySelector('.toggle-switch input[type="checkbox"]');
+            const subCheckboxes = container.querySelectorAll('input[type="checkbox"]');
+
+            // Sync: if any sub-item is checked, parent checkbox must be checked.
+            subCheckboxes.forEach((scb) => {
+              scb.addEventListener('change', () => {
+                const anyChecked = Array.from(subCheckboxes).some(cb => cb.checked);
+                parentCheckbox.checked = anyChecked;
+                card.classList.toggle('selected', anyChecked);
+              });
+            });
+
+            // Sync: if parent checkbox changes, toggle all sub-items.
+            parentCheckbox.addEventListener('change', () => {
+              subCheckboxes.forEach((scb) => {
+                scb.checked = parentCheckbox.checked;
+              });
+            });
+
+            // Adjust parent check based on default sub-item checked state
+            const anyChecked = Array.from(subCheckboxes).some(cb => cb.checked);
+            parentCheckbox.checked = anyChecked;
+            card.classList.toggle('selected', anyChecked);
+          }
+        }
       });
 
       // Total size
@@ -255,9 +339,18 @@
     termLog(`Temizlik başlatılıyor (${selected.length} kategori)…`, 'info');
 
     try {
+      const appLeftoversSelected = getSelectedSubitems('app_leftovers');
+      const browserFullSelected = getSelectedSubitems('browser_full');
+      const developerSelected = getSelectedSubitems('developer');
+
       const data = await apiFetch('/api/clean', {
         method: 'POST',
-        body: JSON.stringify({ categories: selected }),
+        body: JSON.stringify({
+          categories: selected,
+          app_leftovers_selected: appLeftoversSelected,
+          browser_full_selected: browserFullSelected,
+          developer_selected: developerSelected,
+        }),
       });
 
       // Show results panel
@@ -303,11 +396,12 @@
       // Reset scan data so user can re-scan
       scanData = null;
 
-      // Reset size badges
+      // Reset size badges and sub-items
       $$('.size-badge').forEach((badge) => {
         badge.textContent = '— Taranmadı';
         badge.classList.remove('has-size', 'large', 'xlarge');
       });
+      $$('.subitems-container').forEach(el => el.remove());
       totalSizeEl.innerHTML = '';
     } catch (err) {
       termLog(`Temizlik hatası: ${err.message}`, 'error');
@@ -335,9 +429,9 @@
       card.classList.toggle('selected', checkbox.checked);
     });
 
-    // Click on card (not on toggle) toggles it
+    // Click on card (not on toggle or sub-items container) toggles it
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.toggle-switch')) return;
+      if (e.target.closest('.toggle-switch') || e.target.closest('.subitems-container')) return;
       checkbox.checked = !checkbox.checked;
       checkbox.dispatchEvent(new Event('change'));
     });

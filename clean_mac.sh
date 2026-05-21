@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# clean_mac.sh — macOS Genel Sistem Temizleyici
+# clean_mac.sh — macOS Genel Sistem Temizleyici (Güvenli Sürüm)
 # Kullanım: bash clean_mac.sh
 #   --scan-json           Tarama sonuçlarını JSON olarak döner (web API için)
 #   --clean-json 1,3,7    Belirtilen kategorileri temizler, sonucu JSON döner
+#   --app-leftovers "dir1,dir2"  (JSON modunda) Temizlenecek uygulama kalıntı dizinleri
+#   --browser-full-sub "chrome,safari"  (JSON modunda) Sıfırlanacak tarayıcı profilleri
+#   --developer-sub "derived_data"  (JSON modunda) Temizlenecek geliştirici alt öğeleri
 #   --status-json         Sistem bilgisini JSON olarak döner
 set -euo pipefail
 
@@ -15,12 +18,17 @@ else
   RED=''; YELLOW=''; GREEN=''; CYAN=''; BLUE=''; BOLD=''; DIM=''; NC=''
 fi
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 SUDO_AVAILABLE=false
 TOTAL_FREED=0
 TOTAL_ITEMS=0
 JSON_MODE=false
 CLEAN_RESULTS=()
+
+# JSON modunda temizlenecek alt öğe listeleri (virgülle ayrılmış)
+APP_LEFTOVERS_CLEAN=""
+BROWSER_FULL_CLEAN=""
+DEVELOPER_CLEAN=""
 
 # Tarayıcı cache dizinleri (~/Library/Caches içindeki üst-seviye klasör adları)
 BROWSER_CACHE_TOPDIRS=(
@@ -202,6 +210,55 @@ is_browser_cache_dir() {
   return 1
 }
 
+# ─── Uygulama Kurulum Kontrol Heuristiği ──────────────────────────────────────
+get_app_name_for_dir() {
+  local dir_name="$1"
+  case "$dir_name" in
+    "Claude") echo "Claude" ;;
+    "com.anthropic.claude") echo "Claude" ;;
+    "Discord") echo "Discord" ;;
+    "Slack") echo "Slack" ;;
+    "Spotify") echo "Spotify" ;;
+    "Steam") echo "Steam" ;;
+    "Code") echo "Visual Studio Code" ;;
+    "com.microsoft.VSCode") echo "Visual Studio Code" ;;
+    "Sublime Text") echo "Sublime Text" ;;
+    "Docker") echo "Docker" ;;
+    "Telegram Desktop") echo "Telegram" ;;
+    "com.tdesktop.Telegram") echo "Telegram" ;;
+    "WhatsApp") echo "WhatsApp" ;;
+    "zoom.us") echo "zoom.us" ;;
+    *)
+      if [[ "$dir_name" == *.* ]]; then
+        echo "${dir_name##*.}"
+      else
+        echo "$dir_name"
+      fi
+      ;;
+  esac
+}
+
+is_app_installed() {
+  local dir_name="$1"
+  # Kritik sistem ve korunan klasörler her zaman kurulu kabul edilir ve korunur
+  case "$dir_name" in
+    Apple|com.apple.*|Google|com.google.*|Microsoft|com.microsoft.*|Adobe|com.adobe.*|Helper|CrashReporter|MobileSync|SyncServices|Oracle|com.oracle.*|Homebrew)
+      return 0
+      ;;
+  esac
+
+  local app_name; app_name=$(get_app_name_for_dir "$dir_name")
+  
+  if [ -d "/Applications/${app_name}.app" ] || \
+     [ -d "/System/Applications/${app_name}.app" ] || \
+     [ -d "$HOME/Applications/${app_name}.app" ] || \
+     [ -d "/Applications/Utilities/${app_name}.app" ] || \
+     [ -d "/System/Applications/Utilities/${app_name}.app" ]; then
+    return 0
+  fi
+  return 1
+}
+
 # ─── Tarama ─────────────────────────────────────────────────────────────────
 scan_user_cache() {
   local total=0
@@ -225,21 +282,14 @@ scan_app_leftovers() {
   local total=0
   local item base s=0
   while IFS= read -r -d '' item; do
-    s=$(get_size_bytes "$item") 2>/dev/null || s=0
-    [ -z "$s" ] && s=0
-    total=$((total + s))
-  done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
-  while IFS= read -r -d '' item; do
-    base=$(basename "$item" .plist)
+    base=$(basename "$item")
     case "$base" in
-      com.apple.*|com.microsoft.*|com.google.*|NSGlobalDomain|.GlobalPreferences|loginwindow*)
-        continue
-        ;;
+      com.apple.*|Apple|MobileSync|SyncServices|CrashReporter) continue ;;
     esac
     s=$(get_size_bytes "$item") 2>/dev/null || s=0
     [ -z "$s" ] && s=0
     total=$((total + s))
-  done < <(find "$HOME/Library/Preferences" -maxdepth 1 -name "*.plist" -print0 2>/dev/null)
+  done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null)
   CAT_SIZES[2]=$total
 }
 
@@ -304,13 +354,6 @@ scan_browser_cache() {
 scan_browser_full() {
   local total=0
   local d
-  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
-    local path="$HOME/Library/Caches/$d"
-    [ -e "$path" ] || continue
-    local s=0
-    s=$(get_size_bytes "$path") || s=0
-    total=$((total + s))
-  done
   for d in "${BROWSER_FULL_DIRS[@]}"; do
     [ -e "$d" ] || continue
     local s=0
@@ -383,16 +426,94 @@ clean_browser_cache() {
 }
 
 clean_browser_full() {
-  header "⚠️  Tarayıcı Tüm Veriler Temizleniyor (Oturumlar Kapanacak!)"
-  local d
-  for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
-    local path="$HOME/Library/Caches/$d"
-    [ -e "$path" ] || continue
-    safe_rm_contents "$path" "$d"
+  header "⚠️  Tarayıcı Tüm Veriler Temizleniyor"
+
+  # Tarayıcılar ve sistem çerez yolları
+  local browser_keys=("safari" "cookies" "chrome" "firefox" "brave" "edge" "opera" "arc")
+  local browser_names=("Safari" "Sistem Çerezleri" "Google Chrome" "Firefox" "Brave" "Microsoft Edge" "Opera" "Arc")
+  local browser_paths=(
+    "$HOME/Library/Safari"
+    "$HOME/Library/Cookies"
+    "$HOME/Library/Application Support/Google/Chrome"
+    "$HOME/Library/Application Support/Firefox"
+    "$HOME/Library/Application Support/BraveSoftware"
+    "$HOME/Library/Application Support/Microsoft Edge"
+    "$HOME/Library/Application Support/com.operasoftware.Opera"
+    "$HOME/Library/Application Support/Arc"
+  )
+
+  if $JSON_MODE; then
+    if [ -z "$BROWSER_FULL_CLEAN" ]; then
+      info "Temizlenecek tarayıcı belirtilmedi, atlanıyor."
+      return
+    fi
+    local IFS_OLD="$IFS"
+    IFS=','
+    local clean_browsers=($BROWSER_FULL_CLEAN)
+    IFS="$IFS_OLD"
+
+    local key
+    for key in ${clean_browsers[@]+"${clean_browsers[@]}"}; do
+      local i
+      for i in "${!browser_keys[@]}"; do
+        if [ "${browser_keys[$i]}" = "$key" ]; then
+          local path="${browser_paths[$i]}"
+          if [ -e "$path" ]; then
+            safe_rm_contents "$path" "${browser_names[$i]} Profili"
+          fi
+        fi
+      done
+    done
+    return
+  fi
+
+  # Interactive CLI Mode
+  echo ""
+  warn "DİKKAT: Tarayıcı tüm verilerini silmek ilgili tarayıcıdaki tüm oturumları kapatır ve verileri sıfırlar!"
+  echo ""
+  
+  local avail_keys=()
+  local avail_names=()
+  local avail_paths=()
+  local idx=1
+  local i
+  
+  for i in "${!browser_keys[@]}"; do
+    local path="${browser_paths[$i]}"
+    if [ -e "$path" ]; then
+      local sz_b; sz_b=$(get_size_bytes "$path") || sz_b=0
+      local sz_h; sz_h=$(format_bytes "$sz_b")
+      printf "  ${RED}%-3d${NC}  %-24s  %s\n" "$idx" "${browser_names[$i]}" "$sz_h"
+      avail_keys+=("${browser_keys[$i]}")
+      avail_names+=("${browser_names[$i]}")
+      avail_paths+=("$path")
+      idx=$((idx + 1))
+    fi
   done
-  for d in "${BROWSER_FULL_DIRS[@]}"; do
-    [ -e "$d" ] || continue
-    safe_rm_contents "$d" "$(basename "$d")"
+
+  if [ "${#avail_keys[@]}" -eq 0 ]; then
+    info "Temizlenecek tarayıcı verisi bulunamadı."
+    return
+  fi
+
+  echo ""
+  echo -ne "  Sıfırlamak istediğiniz tarayıcı numaralarını girin (boşlukla) veya ${BOLD}none${NC}: "
+  local selection; read -r selection
+  
+  if [ "$selection" = "none" ] || [ -z "$selection" ]; then
+    info "Tarayıcı temizliği atlandı."
+    return
+  fi
+
+  read -ra indices <<< "$selection"
+  for num in ${indices[@]+"${indices[@]}"}; do
+    local real_idx=$((num - 1))
+    if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#avail_keys[@]}" ]; then
+      warn "Seçilen '${avail_names[$real_idx]}' profil verileri tamamen silinecek!"
+      if confirm "Emin misiniz?"; then
+        safe_rm_contents "${avail_paths[$real_idx]}" "${avail_names[$real_idx]} Profili"
+      fi
+    fi
   done
 }
 
@@ -445,99 +566,152 @@ clean_trash() {
   safe_rm_contents "$HOME/.Trash" "~/.Trash"
 }
 
-# ─── App Leftovers Sub-Menü ──────────────────────────────────────────────────
 clean_app_leftovers() {
-  header "📂 Uygulama Kalıntıları"
+  header "📂 Uygulama Kalıntıları Temizleniyor"
 
-  # ── Application Support ──
+  # Eğer JSON modundaysak ve temizlenecek alt dizinler belirtilmişse
+  if $JSON_MODE; then
+    if [ -z "$APP_LEFTOVERS_CLEAN" ]; then
+      info "Temizlenecek alt dizin belirtilmedi, atlanıyor."
+      return
+    fi
+    local IFS_OLD="$IFS"
+    IFS=','
+    local clean_dirs=($APP_LEFTOVERS_CLEAN)
+    IFS="$IFS_OLD"
+    
+    local d
+    for d in "${clean_dirs[@]}"; do
+      # Güvenlik: Dizin yolunu kontrol et, sadece ~/Library/Application Support altında olmalı
+      local full_path="$HOME/Library/Application Support/$d"
+      if [ -d "$full_path" ]; then
+        safe_rm "$full_path" "$d (Application Support)"
+      fi
+      # Tercih dosyası (.plist) varsa onu da temizle
+      local plist_path="$HOME/Library/Preferences/$d.plist"
+      case "$d" in
+        com.apple.*|com.google.*|com.microsoft.*) ;;
+        *)
+          if [ -e "$plist_path" ]; then
+            safe_rm "$plist_path" "$d.plist (Preferences)"
+          fi
+          ;;
+      esac
+    done
+    return
+  fi
+
+  # Interactive CLI Mode
   echo ""
-  echo -e "  ${BOLD}~/Library/Application Support/ klasörleri:${NC}"
+  echo -e "  ${BOLD}~/Library/Application Support/ klasörleri (Analiz Edildi):${NC}"
   echo ""
+  
   local as_paths=()
+  local as_names=()
+  local as_orphaned=()
   local idx=1
   local item
+  
   while IFS= read -r -d '' item; do
+    local base; base=$(basename "$item")
+    case "$base" in
+      com.apple.*|Apple|MobileSync|SyncServices|CrashReporter) continue ;;
+    esac
+    
     local sz_b; sz_b=$(get_size_bytes "$item") || sz_b=0
     local sz_h; sz_h=$(format_bytes "$sz_b")
-    printf "  ${GREEN}%-3d${NC}  %-42s  %s\n" "$idx" "$(basename "$item")" "$sz_h"
+    
+    local is_installed=0
+    if is_app_installed "$base"; then
+      is_installed=1
+    fi
+    
+    if [ "$is_installed" -eq 0 ]; then
+      printf "  ${GREEN}%-3d${NC}  %-42s  %-8s  ${GREEN}[Kalıntı - Önerilen]${NC}\n" "$idx" "$base" "$sz_h"
+      as_orphaned+=("true")
+    else
+      printf "  ${DIM}%-3d  %-42s  %-8s  [Yüklü - Korunuyor]${NC}\n" "$idx" "$base" "$sz_h"
+      as_orphaned+=("false")
+    fi
     as_paths+=("$item")
+    as_names+=("$base")
     idx=$((idx + 1))
   done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 
   echo ""
-  echo -e "  Numara girin (boşlukla), ${BOLD}all${NC} = hepsi, ${BOLD}none${NC} = atla:"
+  echo -e "  Numara girin (boşlukla), ${BOLD}orphans${NC} = sadece kalıntılar, ${BOLD}none${NC} = atla:"
   echo -ne "  > "
   local selection; read -r selection
 
   if [ "$selection" != "none" ] && [ -n "$selection" ]; then
     local indices=()
-    if [ "$selection" = "all" ]; then
-      local j; for j in "${!as_paths[@]}"; do indices+=("$((j+1))"); done
+    if [ "$selection" = "orphans" ]; then
+      local j; for j in "${!as_paths[@]}"; do
+        if [ "${as_orphaned[$j]}" = "true" ]; then
+          indices+=("$((j+1))")
+        fi
+      done
+    elif [ "$selection" = "all" ]; then
+      warn "UYARI: 'all' seçeneği yüklü uygulamaların (örn. Claude) ayarlarını da silecektir!"
+      if confirm "Yüklü uygulamaların ayarlarını da silmek istediğinize emin misiniz?"; then
+        local j; for j in "${!as_paths[@]}"; do indices+=("$((j+1))"); done
+      else
+        local j; for j in "${!as_paths[@]}"; do
+          if [ "${as_orphaned[$j]}" = "true" ]; then
+            indices+=("$((j+1))");
+          fi
+        done
+        info "Sadece kalıntılar seçildi."
+      fi
     else
       read -ra indices <<< "$selection"
     fi
-    for num in "${indices[@]}"; do
+    
+    for num in ${indices[@]+"${indices[@]}"}; do
       local real_idx=$((num - 1))
       if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#as_paths[@]}" ]; then
-        safe_rm "${as_paths[$real_idx]}" "$(basename "${as_paths[$real_idx]}")"
+        local base_name="${as_names[$real_idx]}"
+        safe_rm "${as_paths[$real_idx]}" "$base_name (Application Support)"
+        local plist_path="$HOME/Library/Preferences/$base_name.plist"
+        if [ -e "$plist_path" ]; then
+          safe_rm "$plist_path" "$base_name.plist (Preferences)"
+        fi
       fi
     done
   else
     info "Application Support atlandı."
   fi
+}
 
-  # ── Third-party Preferences ──
-  echo ""
-  echo -e "  ${BOLD}~/Library/Preferences/ (üçüncü taraf .plist):${NC}"
-  echo ""
-  local pl_paths=()
-  idx=1
-  while IFS= read -r -d '' item; do
-    local base; base=$(basename "$item" .plist)
-    case "$base" in
-      com.apple.*|com.microsoft.*|com.google.*|NSGlobalDomain|.GlobalPreferences|loginwindow*) continue ;;
-    esac
-    local sz_b; sz_b=$(get_size_bytes "$item") || sz_b=0
-    local sz_h; sz_h=$(format_bytes "$sz_b")
-    printf "  ${GREEN}%-3d${NC}  %-52s  %s\n" "$idx" "$(basename "$item")" "$sz_h"
-    pl_paths+=("$item")
-    idx=$((idx + 1))
-  done < <(find "$HOME/Library/Preferences" -maxdepth 1 -name "*.plist" -print0 2>/dev/null | sort -z)
+clean_developer() {
+  header "🛠  Geliştirici Verileri Temizleniyor"
 
-  if [ "${#pl_paths[@]}" -eq 0 ]; then
-    info "Üçüncü taraf .plist bulunamadı."
+  local deriveddata="$HOME/Library/Developer/Xcode/DerivedData"
+  
+  if $JSON_MODE; then
+    if [ -z "$DEVELOPER_CLEAN" ]; then
+      info "Temizlenecek geliştirici alt kategorisi belirtilmedi, atlanıyor."
+      return
+    fi
+    local IFS_OLD="$IFS"
+    IFS=','
+    local clean_items=($DEVELOPER_CLEAN)
+    IFS="$IFS_OLD"
+    
+    local item
+    for item in ${clean_items[@]+"${clean_items[@]}"}; do
+      if [ "$item" = "derived_data" ]; then
+        if [ -d "$deriveddata" ]; then
+          safe_rm_contents "$deriveddata" "Xcode DerivedData"
+        fi
+      elif [ "$item" = "broken_links" ]; then
+        clean_broken_symlinks_silent
+      fi
+    done
     return
   fi
 
-  echo ""
-  echo -ne "  Numaralar (boşlukla, all/none): "
-  read -r selection
-
-  if [ "$selection" = "none" ] || [ -z "$selection" ]; then
-    info "Preferences atlandı."; return
-  fi
-
-  local indices=()
-  if [ "$selection" = "all" ]; then
-    local j; for j in "${!pl_paths[@]}"; do indices+=("$((j+1))"); done
-  else
-    read -ra indices <<< "$selection"
-  fi
-
-  for num in "${indices[@]}"; do
-    local real_idx=$((num - 1))
-    if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#pl_paths[@]}" ]; then
-      safe_rm "${pl_paths[$real_idx]}" "$(basename "${pl_paths[$real_idx]}")"
-    fi
-  done
-}
-
-# ─── Geliştirici + Broken Symlinks ──────────────────────────────────────────
-clean_developer() {
-  header "🛠️  Geliştirici Verileri Temizleniyor"
-
-  # Xcode DerivedData
-  local deriveddata="$HOME/Library/Developer/Xcode/DerivedData"
+  # Interactive CLI Mode
   if [ -d "$deriveddata" ]; then
     if confirm "Xcode DerivedData temizlensin mi?"; then
       safe_rm_contents "$deriveddata" "Xcode DerivedData"
@@ -546,7 +720,34 @@ clean_developer() {
     info "Xcode DerivedData bulunamadı."
   fi
 
-  # Broken symlinks
+  clean_broken_symlinks_interactive
+}
+
+clean_broken_symlinks_silent() {
+  local scan_dirs=()
+  [ -d "/usr/local/bin" ]    && scan_dirs+=("/usr/local/bin")
+  [ -d "/opt/homebrew/bin" ] && scan_dirs+=("/opt/homebrew/bin")
+  [ -d "$HOME/.local/bin" ]  && scan_dirs+=("$HOME/.local/bin")
+  [ -d "$HOME/.config" ]     && scan_dirs+=("$HOME/.config")
+  [ -d "$HOME/bin" ]         && scan_dirs+=("$HOME/bin")
+
+  local broken_links=()
+  local dir
+  for dir in ${scan_dirs[@]+"${scan_dirs[@]}"}; do
+    local link
+    while IFS= read -r link; do
+      [ -n "$link" ] && broken_links+=("$link")
+    done < <(find "$dir" -maxdepth 3 -type l ! -e 2>/dev/null)
+  done
+
+  for link in ${broken_links[@]+"${broken_links[@]}"}; do
+    rm -f "$link" 2>/dev/null && {
+      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+    }
+  done
+}
+
+clean_broken_symlinks_interactive() {
   echo ""
   echo -e "  ${BOLD}Kırık sembolik linkler taranıyor...${NC}"
   local scan_dirs=()
@@ -558,7 +759,7 @@ clean_developer() {
 
   local broken_links=()
   local dir
-  for dir in "${scan_dirs[@]}"; do
+  for dir in ${scan_dirs[@]+"${scan_dirs[@]}"}; do
     local link
     while IFS= read -r link; do
       [ -n "$link" ] && broken_links+=("$link")
@@ -573,13 +774,13 @@ clean_developer() {
   echo ""
   warn "Kırık sembolik linkler (${#broken_links[@]} adet):"
   local link
-  for link in "${broken_links[@]}"; do
+  for link in ${broken_links[@]+"${broken_links[@]}"}; do
     printf "  ${DIM}  %s → %s${NC}\n" "$link" "$(readlink "$link" 2>/dev/null || echo '?')"
   done
   echo ""
 
   if confirm "Tüm kırık sembolik linkler silinsin mi?"; then
-    for link in "${broken_links[@]}"; do
+    for link in ${broken_links[@]+"${broken_links[@]}"}; do
       rm -f "$link" 2>/dev/null && {
         success "$(basename "$link") silindi"
         TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
@@ -605,7 +806,7 @@ category_selector() {
     fi
   done
   echo ""
-  echo -ne "  Numara girin (boşlukla, örn. 1 3 7) veya ${BOLD}all${NC}: "
+  echo -ne "  Numara girin (boşlukla, örn. 1 4 7 8) veya ${BOLD}all${NC} (sadece güvenli olanlar): "
   local selection; read -r selection
   echo "$selection"
 }
@@ -616,7 +817,7 @@ run_clean() {
                 clean_logs clean_temp_files clean_developer clean_trash \
                 clean_browser_cache clean_browser_full)
   local idx
-  for idx in "${selected_indices[@]}"; do
+  for idx in ${selected_indices[@]+"${selected_indices[@]}"}; do
     local real_idx=$((idx - 1))
     if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#fn_map[@]}" ]; then
       if [ "${CAT_NEEDS_SUDO[$real_idx]}" -eq 1 ] && ! $SUDO_AVAILABLE; then
@@ -650,8 +851,104 @@ json_escape_str() {
   echo "$s"
 }
 
+scan_app_leftovers_subitems_json() {
+  local first=true
+  local item base s sz_h is_orph
+  while IFS= read -r -d '' item; do
+    base=$(basename "$item")
+    case "$base" in
+      com.apple.*|Apple|MobileSync|SyncServices|CrashReporter) continue ;;
+    esac
+    s=$(get_size_bytes "$item") 2>/dev/null || s=0
+    [ "$s" -le 0 ] && continue
+    sz_h=$(format_bytes "$s")
+    
+    if is_app_installed "$base"; then
+      is_orph="false"
+    else
+      is_orph="true"
+    fi
+    
+    if [ "$first" = true ]; then
+      first=false
+    else
+      echo ","
+    fi
+    local esc_base; esc_base=$(json_escape_str "$base")
+    local esc_path; esc_path=$(json_escape_str "$item")
+    echo -n "        {\"id\": \"$esc_base\", \"name\": \"$esc_base\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"is_orphaned\": $is_orph}"
+  done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
+}
+
+scan_developer_subitems_json() {
+  local deriveddata="$HOME/Library/Developer/Xcode/DerivedData"
+  local s_derived=0
+  if [ -d "$deriveddata" ]; then
+    s_derived=$(get_dir_size_bytes "$deriveddata")
+  fi
+  local sz_derived; sz_derived=$(format_bytes "$s_derived")
+  local esc_derived_path; esc_derived_path=$(json_escape_str "$deriveddata")
+  echo "        {\"id\": \"derived_data\", \"name\": \"Xcode DerivedData\", \"path\": \"$esc_derived_path\", \"size_bytes\": $s_derived, \"size_human\": \"$sz_derived\", \"is_orphaned\": false}"
+  
+  local scan_dirs=()
+  [ -d "/usr/local/bin" ]    && scan_dirs+=("/usr/local/bin")
+  [ -d "/opt/homebrew/bin" ] && scan_dirs+=("/opt/homebrew/bin")
+  [ -d "$HOME/.local/bin" ]  && scan_dirs+=("$HOME/.local/bin")
+  [ -d "$HOME/.config" ]     && scan_dirs+=("$HOME/.config")
+  [ -d "$HOME/bin" ]         && scan_dirs+=("$HOME/bin")
+
+  local broken_count=0
+  local dir
+  for dir in ${scan_dirs[@]+"${scan_dirs[@]}"}; do
+    local link
+    while IFS= read -r link; do
+      [ -n "$link" ] && broken_count=$((broken_count + 1))
+    done < <(find "$dir" -maxdepth 3 -type l ! -e 2>/dev/null)
+  done
+  
+  local s_sym=$((broken_count * 1024))
+  local sz_sym; sz_sym="$broken_count adet"
+  echo "        ,{\"id\": \"broken_links\", \"name\": \"Kırık Sembolik Linkler\", \"path\": \"\", \"size_bytes\": $s_sym, \"size_human\": \"$sz_sym\", \"is_orphaned\": true}"
+}
+
+scan_browser_full_subitems_json() {
+  local first=true
+  local d path s sz_h esc_id esc_path
+  
+  local browser_keys=("safari" "cookies" "chrome" "firefox" "brave" "edge" "opera" "arc")
+  local browser_names=("Safari" "Sistem Çerezleri" "Google Chrome" "Firefox" "Brave" "Microsoft Edge" "Opera" "Arc")
+  local browser_paths=(
+    "$HOME/Library/Safari"
+    "$HOME/Library/Cookies"
+    "$HOME/Library/Application Support/Google/Chrome"
+    "$HOME/Library/Application Support/Firefox"
+    "$HOME/Library/Application Support/BraveSoftware"
+    "$HOME/Library/Application Support/Microsoft Edge"
+    "$HOME/Library/Application Support/com.operasoftware.Opera"
+    "$HOME/Library/Application Support/Arc"
+  )
+  
+  local i
+  for i in "${!browser_keys[@]}"; do
+    path="${browser_paths[$i]}"
+    [ -e "$path" ] || continue
+    s=$(get_size_bytes "$path") || s=0
+    [ "$s" -le 0 ] && continue
+    sz_h=$(format_bytes "$s")
+    esc_id="${browser_keys[$i]}"
+    esc_path=$(json_escape_str "$path")
+    local esc_name; esc_name=$(json_escape_str "${browser_names[$i]}")
+    
+    if [ "$first" = true ]; then
+      first=false
+    else
+      echo ","
+    fi
+    echo -n "        {\"id\": \"$esc_id\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
+  done
+}
+
 do_scan_json() {
-  # Sudo yok, interaktif input yok
   SUDO_AVAILABLE=false
   scan_all >/dev/null 2>&1
 
@@ -669,14 +966,36 @@ do_scan_json() {
   "scan": {
 ENDJSON
   for i in "${!CAT_IDS[@]}"; do
+    local id="${CAT_IDS[$i]}"
     local sz_h; sz_h=$(format_bytes "${CAT_SIZES[$i]}")
     local needs_sudo="false"
     [ "${CAT_NEEDS_SUDO[$i]}" -eq 1 ] && needs_sudo="true"
+    
+    echo "    \"$id\": {"
+    echo "      \"size_bytes\": ${CAT_SIZES[$i]},"
+    echo "      \"size_human\": \"$sz_h\","
+    echo "      \"needs_sudo\": $needs_sudo"
+    
+    if [ "$id" = "app_leftovers" ]; then
+      echo "      ,\"subitems\": ["
+      scan_app_leftovers_subitems_json
+      echo ""
+      echo "      ]"
+    elif [ "$id" = "developer" ]; then
+      echo "      ,\"subitems\": ["
+      scan_developer_subitems_json
+      echo ""
+      echo "      ]"
+    elif [ "$id" = "browser_full" ]; then
+      echo "      ,\"subitems\": ["
+      scan_browser_full_subitems_json
+      echo ""
+      echo "      ]"
+    fi
+    
     local comma=","
     [ "$i" -eq $((${#CAT_IDS[@]} - 1)) ] && comma=""
-    cat <<ENDJSON
-    "${CAT_IDS[$i]}": {"size_bytes": ${CAT_SIZES[$i]}, "size_human": "$sz_h", "needs_sudo": $needs_sudo}${comma}
-ENDJSON
+    echo "    }${comma}"
   done
   cat <<ENDJSON
   },
@@ -708,14 +1027,13 @@ do_clean_json() {
   TOTAL_ITEMS=0
   CLEAN_RESULTS=()
 
-  # Temizleme — interaktif olmayan modda uygulama kalıntıları atlanır
-  local fn_map=(clean_user_cache clean_system_cache "" \
-                clean_logs clean_temp_files "" clean_trash \
+  # Temizleme fonksiyon eşleşmesi
+  local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
+                clean_logs clean_temp_files clean_developer clean_trash \
                 clean_browser_cache clean_browser_full)
-  # Not: index 2 (app_leftovers) ve 5 (developer) interaktif, web'den atlanır
 
   local idx
-  for idx in "${cat_nums[@]}"; do
+  for idx in ${cat_nums[@]+"${cat_nums[@]}"}; do
     local real_idx=$((idx - 1))
     if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#fn_map[@]}" ]; then
       local fn="${fn_map[$real_idx]}"
@@ -744,7 +1062,7 @@ do_clean_json() {
   echo '  "details": ['
 
   local j=0
-  for entry in "${CLEAN_RESULTS[@]}"; do
+  for entry in ${CLEAN_RESULTS[@]+"${CLEAN_RESULTS[@]}"}; do
     IFS='|' read -r cat_id freed freed_h status <<< "$entry"
     local comma=","
     [ $((j + 1)) -eq ${#CLEAN_RESULTS[@]} ] && comma=""
@@ -770,52 +1088,76 @@ ENDJSON
 
 # ─── Ana Akış ────────────────────────────────────────────────────────────────
 main() {
-  # JSON API modları (web arayüzü için)
-  case "${1:-}" in
-    --scan-json)
-      do_scan_json
-      exit 0
-      ;;
-    --clean-json)
-      if [ -z "${2:-}" ]; then
-        echo '{"success": false, "error": "Kategori listesi gerekli. Örnek: --clean-json 1,3,7"}'
-        exit 1
-      fi
-      do_clean_json "$2"
-      exit 0
-      ;;
-    --status-json)
-      do_status_json
-      exit 0
-      ;;
-  esac
+  local args=("$@")
+  local i=0
+  local clean_csv=""
+  
+  while [ $i -lt ${#args[@]} ]; do
+    case "${args[$i]}" in
+      --scan-json)
+        do_scan_json
+        exit 0
+        ;;
+      --status-json)
+        do_status_json
+        exit 0
+        ;;
+      --clean-json)
+        i=$((i + 1))
+        clean_csv="${args[$i]}"
+        ;;
+      --app-leftovers)
+        i=$((i + 1))
+        APP_LEFTOVERS_CLEAN="${args[$i]}"
+        ;;
+      --browser-full-sub)
+        i=$((i + 1))
+        BROWSER_FULL_CLEAN="${args[$i]}"
+        ;;
+      --developer-sub)
+        i=$((i + 1))
+        DEVELOPER_CLEAN="${args[$i]}"
+        ;;
+      --help|-h)
+        echo ""
+        echo -e "${BOLD}clean_mac v${VERSION}${NC} — macOS Sistem Temizleyici (Güvenli Sürüm)"
+        echo ""
+        echo "Kullanım: bash clean_mac.sh"
+        echo ""
+        echo -e "${BOLD}Kategoriler:${NC}"
+        echo "  1  Kullanıcı Cache       ~/Library/Caches/* (Tarayıcılar hariç)"
+        echo "  2  Sistem Cache          /Library/Caches/*          [sudo]"
+        echo "  3  Uygulama Kalıntıları  ~/Library/Application Support/ + Preferences"
+        echo "  4  Loglar                ~/Library/Logs/* + /Library/Logs/*"
+        echo "  5  Geçici Dosyalar       \$TMPDIR + user var/folders"
+        echo "  6  Geliştirici           Xcode DerivedData + kırık symlink'ler"
+        echo "  7  Çöp Kutusu            ~/.Trash/*"
+        echo "  8  Tarayıcı Cache        Tarayıcı önbellekleri (Güvenli)"
+        echo "  9  Tarayıcı Tüm Veri     Tarayıcı profilleri, çerezler [Oturumlar Kapanır!]"
+        echo ""
+        echo -e "${BOLD}Web API:${NC}"
+        echo "  --scan-json              Tarama sonuçlarını JSON döner"
+        echo "  --clean-json 1,3,7       Belirtilen kategorileri temizler, JSON döner"
+        echo "  --app-leftovers 'd1,d2'  Silinecek kalıntı klasör isimleri"
+        echo "  --browser-full-sub 'c,s' Sıfırlanacak tarayıcı kodları (chrome, safari...)"
+        echo "  --developer-sub 'd,b'    Xcode DerivedData (derived_data) veya Kırık Symlinkler (broken_links)"
+        echo "  --status-json            Sistem bilgisini JSON döner"
+        echo ""
+        echo "Not: Downloads klasörüne dokunulmaz."
+        echo ""
+        exit 0
+        ;;
+    esac
+    i=$((i + 1))
+  done
 
-  # --help / -h support
-  if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    echo ""
-    echo -e "${BOLD}clean_mac v${VERSION}${NC} — macOS Sistem Temizleyici"
-    echo ""
-    echo "Kullanım: bash clean_mac.sh"
-    echo ""
-    echo -e "${BOLD}Kategoriler:${NC}"
-    echo "  1  Kullanıcı Cache       ~/Library/Caches/*"
-    echo "  2  Sistem Cache          /Library/Caches/*          [sudo]"
-    echo "  3  Uygulama Kalıntıları  ~/Library/Application Support/ + Preferences"
-    echo "  4  Loglar                ~/Library/Logs/* + /Library/Logs/*"
-    echo "  5  Geçici Dosyalar       \$TMPDIR + user var/folders"
-    echo "  6  Geliştirici           Xcode DerivedData + kırık symlink'ler"
-    echo "  7  Çöp Kutusu            ~/.Trash/*"
-    echo ""
-    echo -e "${BOLD}Web API:${NC}"
-    echo "  --scan-json              Tarama sonuçlarını JSON döner"
-    echo "  --clean-json 1,3,7       Belirtilen kategorileri temizler, JSON döner"
-    echo "  --status-json            Sistem bilgisini JSON döner"
-    echo ""
-    echo "Not: Downloads klasörüne dokunulmaz."
-    echo ""
+  # Eğer clean_csv argümanı yakalandıysa JSON modda çalıştır
+  if [ -n "$clean_csv" ]; then
+    do_clean_json "$clean_csv"
     exit 0
   fi
 
+  # Terminal İnteraktif Mod
   clear
   header "🍎 clean_mac v${VERSION} — macOS Sistem Temizleyici"
   echo ""
@@ -823,8 +1165,8 @@ main() {
   echo -e "  Kullanıcı : $(whoami)"
   echo -e "  Tarih     : $(date '+%Y-%m-%d %H:%M:%S')"
   echo ""
-  info "Bu script ÖNCE tarar, silmeden önce onayınızı ister."
-  warn "Kritik sistem dosyalarına dokunulmaz."
+  info "Bu betik ÖNCE tarar, silmeden önce onayınızı ister."
+  warn "Kritik sistem dosyaları ve aktif uygulama oturumları korunur."
   echo ""
 
   sudo_check
@@ -833,8 +1175,8 @@ main() {
 
   echo -e "  ${BOLD}Ne yapmak istersiniz?${NC}"
   echo ""
-  echo -e "  ${GREEN}1${NC}  Hepsini Temizle"
-  echo -e "  ${GREEN}2${NC}  Kategori Seçerek Temizle"
+  echo -e "  ${GREEN}1${NC}  Sadece Kesinlikle Güvenli Dosyaları Hızlı Temizle (Önbellek, Log, Temp, Sepet vb.)"
+  echo -e "  ${GREEN}2${NC}  Kategori Seçerek Temizle (Uygulama Ayarları / Tarayıcı Oturumları Seçmeli)"
   echo -e "  ${RED}3${NC}  İptal"
   echo ""
   echo -ne "  Seçiminiz [1/2/3]: "
@@ -843,15 +1185,16 @@ main() {
   case "$choice" in
     1)
       echo ""
-      warn "Tüm kategoriler temizlenecek. Bu işlem geri alınamaz."
+      warn "Kesinlikle güvenli kategoriler (Önbellek, Log, Temp, Çöp Kutusu, Tarayıcı Caches) temizlenecek."
       confirm "Devam etmek istiyor musunuz?" || { echo ""; info "İptal edildi."; exit 0; }
-      run_clean 1 2 3 4 5 6 7 8 9
+      # Sadece güvenli kategorileri çalıştır: 1, 2 (varsa sudo), 4, 5, 7, 8
+      run_clean 1 2 4 5 7 8
       ;;
     2)
       local raw_selection; raw_selection=$(category_selector)
       local selected_nums=()
       if [ "$raw_selection" = "all" ]; then
-        selected_nums=(1 2 3 4 5 6 7)
+        selected_nums=(1 2 4 5 7 8)
       else
         read -ra selected_nums <<< "$raw_selection"
       fi
