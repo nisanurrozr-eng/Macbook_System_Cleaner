@@ -97,6 +97,8 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/clean":
             self._handle_clean()
+        elif parsed.path == "/api/spotlight-reindex":
+            self._handle_spotlight_reindex()
         else:
             self._send_error_json("Not found", 404)
 
@@ -144,9 +146,20 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
         if developer_selected and isinstance(developer_selected, list):
             args += ["--developer-sub", ",".join(str(x) for x in developer_selected)]
 
+        ios_backups_selected = payload.get("ios_backups_selected", [])
+        if ios_backups_selected and isinstance(ios_backups_selected, list):
+            args += ["--ios-backups-sub", ",".join(str(x) for x in ios_backups_selected)]
+
         data, err = self._run_script(args)
         if err:
             self._send_error_json(f"Temizleme hatası: {err}")
+        else:
+            self._send_json(data)
+
+    def _handle_spotlight_reindex(self):
+        data, err = self._run_script(["--spotlight-reindex"], timeout=10)
+        if err:
+            self._send_error_json(f"Spotlight hatası: {err}")
         else:
             self._send_json(data)
 
