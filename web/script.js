@@ -18,6 +18,7 @@
     trash:         { index: 7, name: 'Çöp Kutusu' },
     browser_cache: { index: 8, name: 'Tarayıcı Cache' },
     browser_full:  { index: 9, name: 'Tarayıcı Tüm Veri (Oturumlar Kapanır!)' },
+    ios_backups:   { index: 10, name: 'iOS Yedekleri (MobileSync)' },
   };
 
   /* ── DOM References ─────────────────────────────────────── */
@@ -239,6 +240,8 @@
                 checkedAttr = 'checked';
               } else if (key === 'browser_full') {
                 checkedAttr = '';
+              } else if (key === 'ios_backups') {
+                checkedAttr = '';
               }
 
               let badgeHtml = '';
@@ -246,6 +249,8 @@
                 const label = sub.is_orphaned ? 'Kalıntı' : 'Yüklü';
                 const cls = sub.is_orphaned ? 'orphaned' : 'installed';
                 badgeHtml = `<span class="subitem-badge ${cls}">${label}</span>`;
+              } else if (key === 'ios_backups') {
+                badgeHtml = `<span class="subitem-badge orphaned">Yedek</span>`;
               }
 
               row.innerHTML = `
@@ -342,6 +347,7 @@
       const appLeftoversSelected = getSelectedSubitems('app_leftovers');
       const browserFullSelected = getSelectedSubitems('browser_full');
       const developerSelected = getSelectedSubitems('developer');
+      const iosBackupsSelected = getSelectedSubitems('ios_backups');
 
       const data = await apiFetch('/api/clean', {
         method: 'POST',
@@ -350,6 +356,7 @@
           app_leftovers_selected: appLeftoversSelected,
           browser_full_selected: browserFullSelected,
           developer_selected: developerSelected,
+          ios_backups_selected: iosBackupsSelected,
         }),
       });
 
@@ -420,6 +427,24 @@
     }
   }
 
+  /* ── Spotlight Reindex ──────────────────────────────────── */
+  async function handleSpotlightReindex() {
+    const btn = $('#btnSpotlight');
+    if (!btn || btn.disabled) return;
+    btn.classList.add('loading');
+    btn.disabled = true;
+    termLog('Spotlight yeniden indeksleme tetikleniyor…', 'info');
+    try {
+      await apiFetch('/api/spotlight-reindex', { method: 'POST', body: '{}' });
+      termLog('Spotlight indeksleme arka planda başlatıldı. Birkaç dakika sürebilir.', 'success');
+    } catch (err) {
+      termLog(`Spotlight hatası: ${err.message}`, 'error');
+    } finally {
+      btn.classList.remove('loading');
+      btn.disabled = false;
+    }
+  }
+
   /* ── Card Toggle ────────────────────────────────────────── */
   cards.forEach((card) => {
     const checkbox = card.querySelector('input[type="checkbox"]');
@@ -459,6 +484,10 @@
   /* ── Button Handlers ────────────────────────────────────── */
   btnScan.addEventListener('click', handleScan);
   btnClean.addEventListener('click', handleClean);
+  const btnSpotlight = $('#btnSpotlight');
+  if (btnSpotlight) {
+    btnSpotlight.addEventListener('click', handleSpotlightReindex);
+  }
 
   /* ── Init ────────────────────────────────────────────────── */
   termLog('Apple Cleanup Dashboard başlatıldı.', 'success');
