@@ -125,7 +125,10 @@
     termBody:      $('#terminalBody'),
     termCount:     $('#termCount'),
 
-    btnSpotlight:  $('#btnSpotlight'),
+    btnSpotlight:   $('#btnSpotlight'),
+    btnFlushDns:    $('#btnFlushDns'),
+    btnPurgeRam:    $('#btnPurgeRam'),
+    btnLaunchAgents: $('#btnLaunchAgents'),
     categoryCount: $('#categoryCount'),
     catList:       $('#catList'),
   };
@@ -438,6 +441,18 @@
 
     if (url === '/api/spotlight-reindex') {
       return { success: true };
+    }
+
+    if (url === '/api/flush-dns') {
+      return { success: true, message: 'DNS önbelleği temizlendi.' };
+    }
+
+    if (url === '/api/purge-ram') {
+      return { success: true, message: 'RAM önbelleği boşaltıldı.' };
+    }
+
+    if (url === '/api/launchagents-clean') {
+      return { success: true, removed: 3, errors: 0 };
     }
 
     return { success: true };
@@ -764,11 +779,59 @@
   }
 
   /* ──────────────────────────────────────────────────────────
+     Maintenance handlers
+     ────────────────────────────────────────────────────────── */
+  async function handleFlushDns() {
+    if (el.btnFlushDns.disabled) return;
+    setLoading(el.btnFlushDns, true);
+    termLog('DNS önbelleği temizleniyor…', 'info');
+    try {
+      const data = await apiFetch('/api/flush-dns', { method: 'POST', body: '{}' });
+      termLog(data.message || 'DNS önbelleği temizlendi.', 'success');
+    } catch (err) {
+      termLog(`DNS hatası: ${err.message}`, 'error');
+    } finally {
+      setLoading(el.btnFlushDns, false);
+    }
+  }
+
+  async function handlePurgeRam() {
+    if (el.btnPurgeRam.disabled) return;
+    setLoading(el.btnPurgeRam, true);
+    termLog('RAM önbelleği boşaltılıyor…', 'info');
+    try {
+      const data = await apiFetch('/api/purge-ram', { method: 'POST', body: '{}' });
+      termLog(data.message || 'RAM önbelleği boşaltıldı.', 'success');
+    } catch (err) {
+      termLog(`RAM hatası: ${err.message}`, 'error');
+    } finally {
+      setLoading(el.btnPurgeRam, false);
+    }
+  }
+
+  async function handleLaunchAgents() {
+    if (el.btnLaunchAgents.disabled) return;
+    setLoading(el.btnLaunchAgents, true);
+    termLog('Bozuk LaunchAgents temizleniyor…', 'info');
+    try {
+      const data = await apiFetch('/api/launchagents-clean', { method: 'POST', body: '{}' });
+      termLog(`LaunchAgents temizlendi. ${data.removed ?? 0} dosya kaldırıldı.`, 'success');
+    } catch (err) {
+      termLog(`LaunchAgents hatası: ${err.message}`, 'error');
+    } finally {
+      setLoading(el.btnLaunchAgents, false);
+    }
+  }
+
+  /* ──────────────────────────────────────────────────────────
      Bindings
      ────────────────────────────────────────────────────────── */
   el.btnScan.addEventListener('click', handleScan);
   el.btnClean.addEventListener('click', handleClean);
   if (el.btnSpotlight) el.btnSpotlight.addEventListener('click', handleSpotlight);
+  if (el.btnFlushDns) el.btnFlushDns.addEventListener('click', handleFlushDns);
+  if (el.btnPurgeRam) el.btnPurgeRam.addEventListener('click', handlePurgeRam);
+  if (el.btnLaunchAgents) el.btnLaunchAgents.addEventListener('click', handleLaunchAgents);
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {

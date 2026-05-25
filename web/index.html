@@ -102,6 +102,27 @@
       <symbol id="i-drop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 2.5c-3.5 5-6 8-6 11.5a6 6 0 0 0 12 0c0-3.5-2.5-6.5-6-11.5z"/>
       </symbol>
+      <symbol id="i-dns" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="6" rx="2"/>
+        <rect x="2" y="15" width="20" height="6" rx="2"/>
+        <path d="M6 6h.01M6 18h.01"/>
+      </symbol>
+      <symbol id="i-ram" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="8" width="20" height="8" rx="2"/>
+        <path d="M7 8V6M12 8V6M17 8V6M7 16v2M12 16v2M17 16v2"/>
+      </symbol>
+      <symbol id="i-agent" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a5 5 0 1 1 0 10A5 5 0 0 1 12 2zM4 22v-1a8 8 0 0 1 16 0v1"/>
+        <path d="M9 14l-2 4M15 14l2 4"/>
+      </symbol>
+      <symbol id="i-uninstall" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="14" rx="2"/>
+        <path d="M8 12l3 3 5-5M3 8h18"/>
+      </symbol>
+      <symbol id="i-mail" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="4" width="20" height="16" rx="2"/>
+        <path d="M2 8l10 7 10-7"/>
+      </symbol>
     </defs>
   </svg>
 
@@ -246,6 +267,45 @@
             <button class="btn btn-ghost btn-sm" id="btnSpotlight" type="button">
               <span class="spinner" aria-hidden="true"></span>
               <span class="btn-text">Yenile</span>
+            </button>
+          </div>
+        </li>
+        <li class="cat cat-maint" id="flushDnsCard">
+          <div class="cat-row cat-row-static">
+            <span class="cat-ic"><svg class="ic"><use href="#i-dns"/></svg></span>
+            <span class="cat-meta">
+              <span class="cat-name">DNS Önbelleğini Temizle</span>
+              <span class="cat-desc">DNS çözümleme sorunlarını ve eski kayıtları temizler.</span>
+            </span>
+            <button class="btn btn-ghost btn-sm" id="btnFlushDns" type="button">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-text">Temizle</span>
+            </button>
+          </div>
+        </li>
+        <li class="cat cat-maint" id="purgeRamCard">
+          <div class="cat-row cat-row-static">
+            <span class="cat-ic"><svg class="ic"><use href="#i-ram"/></svg></span>
+            <span class="cat-meta">
+              <span class="cat-name">RAM Önbelleğini Boşalt</span>
+              <span class="cat-desc">Etkin olmayan bellek sayfalarını serbest bırakır.</span>
+            </span>
+            <button class="btn btn-ghost btn-sm" id="btnPurgeRam" type="button">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-text">Boşalt</span>
+            </button>
+          </div>
+        </li>
+        <li class="cat cat-maint" id="launchAgentsCard">
+          <div class="cat-row cat-row-static">
+            <span class="cat-ic"><svg class="ic"><use href="#i-agent"/></svg></span>
+            <span class="cat-meta">
+              <span class="cat-name">Bozuk LaunchAgents Temizle</span>
+              <span class="cat-desc">Geçersiz .plist dosyalarını kaldırır, yavaş giriş sorunlarını çözer.</span>
+            </span>
+            <button class="btn btn-ghost btn-sm" id="btnLaunchAgents" type="button">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-text">Temizle</span>
             </button>
           </div>
         </li>
