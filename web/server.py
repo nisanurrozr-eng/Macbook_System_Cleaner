@@ -28,6 +28,33 @@ MIME_TYPES = {
     ".woff2": "font/woff2",
 }
 
+_APP_LEFTOVER_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')
+_APP_NAME_RE     = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')
+_DEVELOPER_WHITELIST = frozenset({
+    "derived_data", "broken_links",
+    "brew_cache", "docker_prune", "npm_cache", "pip_cache",
+})
+_BROWSER_WHITELIST = frozenset({
+    "safari", "cookies", "chrome", "firefox",
+    "brave", "edge", "opera", "arc",
+})
+
+
+def _validate_app_leftover(name: str) -> bool:
+    return bool(_APP_LEFTOVER_RE.match(name)) and ".." not in name and "/" not in name
+
+
+def _validate_developer_item(item: str) -> bool:
+    return item in _DEVELOPER_WHITELIST
+
+
+def _validate_browser_key(key: str) -> bool:
+    return key in _BROWSER_WHITELIST
+
+
+def _validate_app_name(name: str) -> bool:
+    return bool(_APP_NAME_RE.match(name)) and ".." not in name and "/" not in name
+
 
 class CleanupHandler(http.server.BaseHTTPRequestHandler):
     """Request handler for the Apple Cleanup dashboard."""
@@ -137,15 +164,21 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
 
         app_leftovers_selected = payload.get("app_leftovers_selected", [])
         if app_leftovers_selected and isinstance(app_leftovers_selected, list):
-            args += ["--app-leftovers", ",".join(str(x) for x in app_leftovers_selected)]
+            safe = [x for x in app_leftovers_selected if isinstance(x, str) and _validate_app_leftover(x)]
+            if safe:
+                args += ["--app-leftovers", ",".join(safe)]
 
         browser_full_selected = payload.get("browser_full_selected", [])
         if browser_full_selected and isinstance(browser_full_selected, list):
-            args += ["--browser-full-sub", ",".join(str(x) for x in browser_full_selected)]
+            safe = [x for x in browser_full_selected if isinstance(x, str) and _validate_browser_key(x)]
+            if safe:
+                args += ["--browser-full-sub", ",".join(safe)]
 
         developer_selected = payload.get("developer_selected", [])
         if developer_selected and isinstance(developer_selected, list):
-            args += ["--developer-sub", ",".join(str(x) for x in developer_selected)]
+            safe = [x for x in developer_selected if isinstance(x, str) and _validate_developer_item(x)]
+            if safe:
+                args += ["--developer-sub", ",".join(safe)]
 
         ios_backups_selected = payload.get("ios_backups_selected", [])
         if ios_backups_selected and isinstance(ios_backups_selected, list):
@@ -153,6 +186,12 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             safe_uuids = [u for u in ios_backups_selected if isinstance(u, str) and _uuid_re.match(u)]
             if safe_uuids:
                 args += ["--ios-backups-sub", ",".join(safe_uuids)]
+
+        app_uninstaller_selected = payload.get("app_uninstaller_selected", [])
+        if app_uninstaller_selected and isinstance(app_uninstaller_selected, list):
+            safe = [x for x in app_uninstaller_selected if isinstance(x, str) and _validate_app_name(x)]
+            if safe:
+                args += ["--app-uninstaller-sub", ",".join(safe)]
 
         data, err = self._run_script(args)
         if err:

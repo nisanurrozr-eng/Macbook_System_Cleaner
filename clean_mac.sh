@@ -30,6 +30,9 @@ APP_LEFTOVERS_CLEAN=""
 BROWSER_FULL_CLEAN=""
 DEVELOPER_CLEAN=""
 IOS_BACKUPS_CLEAN=""
+APP_UNINSTALLER_CLEAN=""
+
+MAIL_DOWNLOADS_DIR="$HOME/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
 
 # Tarayıcı cache dizinleri (~/Library/Caches içindeki üst-seviye klasör adları)
 BROWSER_CACHE_TOPDIRS=(
@@ -60,12 +63,14 @@ BROWSER_FULL_DIRS=(
 )
 
 # Paralel diziler — bash 3.2 (Monterey dahil tüm macOS) ile uyumlu
-CAT_IDS=(user_cache system_cache app_leftovers logs temp_files developer trash browser_cache browser_full ios_backups)
+CAT_IDS=(user_cache system_cache app_leftovers logs temp_files developer trash \
+         browser_cache browser_full ios_backups app_uninstaller mail_downloads)
 CAT_NAMES=("Kullanıcı Cache" "Sistem Cache" "Uygulama Kalıntıları" \
             "Loglar" "Geçici Dosyalar" "Geliştirici" "Çöp Kutusu" \
-            "Tarayıcı Cache" "Tarayıcı Tüm Veri" "iOS Yedekleri")
-CAT_SIZES=(0 0 0 0 0 0 0 0 0 0)
-CAT_NEEDS_SUDO=(0 1 0 0 0 0 0 0 0 0)
+            "Tarayıcı Cache" "Tarayıcı Tüm Veri" "iOS Yedekleri" \
+            "Tam Uygulama Kaldırıcı" "Mail İndirilenleri")
+CAT_SIZES=(0 0 0 0 0 0 0 0 0 0 0 0)
+CAT_NEEDS_SUDO=(0 1 0 0 0 0 0 0 0 0 0 0)
 
 # ─── UI ─────────────────────────────────────────────────────────────────────
 header() {
@@ -383,11 +388,37 @@ scan_ios_backups() {
   CAT_SIZES[9]=$s
 }
 
+scan_app_uninstaller() {
+  local total=0
+  local app app_name s
+  while IFS= read -r -d '' app; do
+    app_name=$(basename "$app" .app)
+    local dir
+    for dir in \
+        "$HOME/Library/Application Support/$app_name" \
+        "$HOME/Library/Caches/$app_name"; do
+      [ -d "$dir" ] || continue
+      s=$(get_size_bytes "$dir") || s=0
+      total=$((total + s))
+    done
+  done < <(find /Applications -maxdepth 1 -name "*.app" -print0 2>/dev/null)
+  CAT_SIZES[10]=$total
+}
+
+scan_mail_downloads() {
+  local s=0
+  if [ -d "$MAIL_DOWNLOADS_DIR" ]; then
+    s=$(get_dir_size_bytes "$MAIL_DOWNLOADS_DIR") || s=0
+  fi
+  CAT_SIZES[11]=$s
+}
+
 scan_all() {
   header "🔍 Taranıyor..."
   local fns=(scan_user_cache scan_system_cache scan_app_leftovers \
              scan_logs scan_temp_files scan_developer scan_trash \
-             scan_browser_cache scan_browser_full scan_ios_backups)
+             scan_browser_cache scan_browser_full scan_ios_backups \
+             scan_app_uninstaller scan_mail_downloads)
   local i
   for i in "${!fns[@]}"; do
     echo -ne "  ${DIM}${CAT_NAMES[$i]}...${NC}\r"
@@ -618,6 +649,55 @@ clean_ios_backups() {
   done
 }
 
+clean_app_uninstaller() {
+  header "🗑️  Uygulamalar Kaldırılıyor"
+  if $JSON_MODE; then
+    if [ -z "$APP_UNINSTALLER_CLEAN" ]; then
+      info "Kaldırılacak uygulama belirtilmedi, atlanıyor."
+      return
+    fi
+    local IFS_OLD="$IFS"
+    IFS=','
+    local clean_apps=($APP_UNINSTALLER_CLEAN)
+    IFS="$IFS_OLD"
+    local app_name
+    for app_name in ${clean_apps[@]+"${clean_apps[@]}"}; do
+      [ -z "$app_name" ] && continue
+      case "$app_name" in
+        */*|*..*)
+          err "Geçersiz uygulama adı (path traversal girişimi): $app_name"
+          continue
+          ;;
+      esac
+      local app_path="/Applications/$app_name.app"
+      if [ -d "$app_path" ]; then
+        safe_rm "$app_path" "Uygulama: $app_name"
+      fi
+      local dir
+      for dir in \
+          "$HOME/Library/Application Support/$app_name" \
+          "$HOME/Library/Caches/$app_name" \
+          "$HOME/Library/Preferences/com.${app_name}.plist" \
+          "$HOME/Library/Saved Application State/${app_name}.savedState"; do
+        if [ -e "$dir" ]; then
+          safe_rm "$dir" "Kalıntı: $dir"
+        fi
+      done
+    done
+    return
+  fi
+  info "Tam Uygulama Kaldırıcı yalnızca web arayüzü üzerinden kullanılabilir."
+}
+
+clean_mail_downloads() {
+  header "📧 Mail İndirilenler Temizleniyor"
+  if [ -d "$MAIL_DOWNLOADS_DIR" ]; then
+    safe_rm_contents "$MAIL_DOWNLOADS_DIR" "Mail İndirilenler"
+  else
+    info "Mail İndirilenler klasörü bulunamadı."
+  fi
+}
+
 clean_system_cache() {
   if ! $SUDO_AVAILABLE; then warn "Sudo yok, Sistem Cache atlandı."; return; fi
   header "🗑️  Sistem Cache Temizleniyor"
@@ -811,6 +891,26 @@ clean_developer() {
         fi
       elif [ "$item" = "broken_links" ]; then
         clean_broken_symlinks_silent
+      elif [ "$item" = "brew_cache" ]; then
+        local brew_path=""
+        if command -v brew &>/dev/null; then
+          brew_path=$(brew --cache 2>/dev/null || echo "")
+        fi
+        [ -z "$brew_path" ] && brew_path="$HOME/Library/Caches/Homebrew"
+        [ -d "$brew_path" ] && safe_rm_contents "$brew_path" "Homebrew Cache"
+      elif [ "$item" = "docker_prune" ]; then
+        if command -v docker &>/dev/null; then
+          docker system prune -a -f --volumes 2>/dev/null || true
+          success "Docker verileri temizlendi."
+        else
+          info "Docker bulunamadı, atlanıyor."
+        fi
+      elif [ "$item" = "npm_cache" ]; then
+        local npm_cache="$HOME/.npm/_cacache"
+        [ -d "$npm_cache" ] && safe_rm_contents "$npm_cache" "npm Cache"
+      elif [ "$item" = "pip_cache" ]; then
+        local pip_cache="$HOME/Library/Caches/pip"
+        [ -d "$pip_cache" ] && safe_rm_contents "$pip_cache" "pip Cache"
       fi
     done
     return
@@ -920,7 +1020,8 @@ run_clean() {
   local selected_indices=("$@")
   local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
                 clean_logs clean_temp_files clean_developer clean_trash \
-                clean_browser_cache clean_browser_full clean_ios_backups)
+                clean_browser_cache clean_browser_full clean_ios_backups \
+                clean_app_uninstaller clean_mail_downloads)
   local idx
   for idx in ${selected_indices[@]+"${selected_indices[@]}"}; do
     local real_idx=$((idx - 1))
@@ -1018,6 +1119,42 @@ scan_developer_subitems_json() {
   local s_sym=$((broken_count * 1024))
   local sz_sym; sz_sym="$broken_count adet"
   echo "        ,{\"id\": \"broken_links\", \"name\": \"Kırık Sembolik Linkler\", \"path\": \"\", \"size_bytes\": $s_sym, \"size_human\": \"$sz_sym\", \"is_orphaned\": true}"
+
+  # brew cache
+  local brew_cache_path=""
+  local s_brew=0
+  if command -v brew &>/dev/null; then
+    brew_cache_path=$(brew --cache 2>/dev/null || echo "")
+  fi
+  [ -z "$brew_cache_path" ] && brew_cache_path="$HOME/Library/Caches/Homebrew"
+  [ -d "$brew_cache_path" ] && s_brew=$(get_dir_size_bytes "$brew_cache_path")
+  local sz_brew; sz_brew=$(format_bytes "$s_brew")
+  local esc_brew_path; esc_brew_path=$(json_escape_str "$brew_cache_path")
+  echo "        ,{\"id\": \"brew_cache\", \"name\": \"Homebrew Cache\", \"path\": \"$esc_brew_path\", \"size_bytes\": $s_brew, \"size_human\": \"$sz_brew\", \"is_orphaned\": false}"
+
+  # docker data
+  local docker_dir="$HOME/Library/Containers/com.docker.docker/Data"
+  local s_docker=0
+  [ -d "$docker_dir" ] && s_docker=$(get_dir_size_bytes "$docker_dir")
+  local sz_docker; sz_docker=$(format_bytes "$s_docker")
+  local esc_docker_path; esc_docker_path=$(json_escape_str "$docker_dir")
+  echo "        ,{\"id\": \"docker_prune\", \"name\": \"Docker Data\", \"path\": \"$esc_docker_path\", \"size_bytes\": $s_docker, \"size_human\": \"$sz_docker\", \"is_orphaned\": false}"
+
+  # npm cache
+  local npm_cache_path="$HOME/.npm/_cacache"
+  local s_npm=0
+  [ -d "$npm_cache_path" ] && s_npm=$(get_dir_size_bytes "$npm_cache_path")
+  local sz_npm; sz_npm=$(format_bytes "$s_npm")
+  local esc_npm_path; esc_npm_path=$(json_escape_str "$npm_cache_path")
+  echo "        ,{\"id\": \"npm_cache\", \"name\": \"npm Cache\", \"path\": \"$esc_npm_path\", \"size_bytes\": $s_npm, \"size_human\": \"$sz_npm\", \"is_orphaned\": false}"
+
+  # pip cache
+  local pip_cache_path="$HOME/Library/Caches/pip"
+  local s_pip=0
+  [ -d "$pip_cache_path" ] && s_pip=$(get_dir_size_bytes "$pip_cache_path")
+  local sz_pip; sz_pip=$(format_bytes "$s_pip")
+  local esc_pip_path; esc_pip_path=$(json_escape_str "$pip_cache_path")
+  echo "        ,{\"id\": \"pip_cache\", \"name\": \"pip Cache\", \"path\": \"$esc_pip_path\", \"size_bytes\": $s_pip, \"size_human\": \"$sz_pip\", \"is_orphaned\": false}"
 }
 
 scan_browser_full_subitems_json() {
@@ -1082,6 +1219,99 @@ scan_ios_backups_subitems_json() {
   done < <(find "$backup_dir" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 }
 
+do_flush_dns() {
+  JSON_MODE=true
+  local ok=true
+  dscacheutil -flushcache 2>/dev/null || ok=false
+  killall -HUP mDNSResponder 2>/dev/null || ok=false
+  if $ok; then
+    printf '{"success":true,"message":"DNS önbelleği temizlendi."}\n'
+  else
+    printf '{"success":false,"error":"DNS temizleme başarısız."}\n'
+  fi
+}
+
+do_purge_ram() {
+  JSON_MODE=true
+  if purge 2>/dev/null; then
+    printf '{"success":true,"message":"RAM önbelleği temizlendi."}\n'
+  else
+    printf '{"success":false,"error":"RAM temizleme başarısız (sudo gerekebilir)."}\n'
+  fi
+}
+
+do_clean_launchagents() {
+  JSON_MODE=true
+  local removed=0
+  local errors=()
+  local dirs=(
+    "$HOME/Library/LaunchAgents"
+    "/Library/LaunchAgents"
+    "/Library/LaunchDaemons"
+  )
+  local d plist
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    while IFS= read -r -d '' plist; do
+      if ! plutil -lint "$plist" &>/dev/null; then
+        rm -f "$plist" 2>/dev/null && removed=$((removed + 1)) || errors+=("$plist")
+      fi
+    done < <(find "$d" -maxdepth 1 -name "*.plist" -print0 2>/dev/null)
+  done
+  printf '{"success":true,"removed":%d,"errors":%d}\n' "$removed" "${#errors[@]}"
+}
+
+get_app_bundle_id() {
+  local app_path="$1"
+  local plist="$app_path/Contents/Info.plist"
+  [ -f "$plist" ] || { echo ""; return; }
+  /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null || echo ""
+}
+
+scan_app_uninstaller_subitems_json() {
+  local first=true
+  local app app_name bundle_id leftover_total s sz_h esc_name esc_bundle
+  while IFS= read -r -d '' app; do
+    app_name=$(basename "$app" .app)
+    bundle_id=$(get_app_bundle_id "$app")
+    leftover_total=0
+    local dir
+    for dir in \
+        "$HOME/Library/Application Support/$app_name" \
+        "$HOME/Library/Caches/$app_name" \
+        "$HOME/Library/Preferences/${bundle_id}.plist" \
+        "$HOME/Library/Saved Application State/${bundle_id}.savedState"; do
+      [ -e "$dir" ] || continue
+      s=$(get_size_bytes "$dir") || s=0
+      leftover_total=$((leftover_total + s))
+    done
+    sz_h=$(format_bytes "$leftover_total")
+    esc_name=$(json_escape_str "$app_name")
+    esc_bundle=$(json_escape_str "$bundle_id")
+    if [ "$first" = true ]; then
+      first=false
+    else
+      echo ","
+    fi
+    echo -n "        {\"id\": \"$esc_name\", \"name\": \"$esc_name\", \"bundle_id\": \"$esc_bundle\", \"size_bytes\": $leftover_total, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
+  done < <(find /Applications -maxdepth 1 -name "*.app" -print0 2>/dev/null | sort -z)
+}
+
+scan_mail_downloads_subitems_json() {
+  local total=0
+  local f sz_h esc_name s
+  if [ -d "$MAIL_DOWNLOADS_DIR" ]; then
+    while IFS= read -r -d '' f; do
+      s=$(get_size_bytes "$f") || s=0
+      total=$((total + s))
+      sz_h=$(format_bytes "$s")
+      esc_name=$(json_escape_str "$(basename "$f")")
+      echo -n "        {\"id\": \"$esc_name\", \"name\": \"$esc_name\", \"path\": \"\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
+      echo ","
+    done < <(find "$MAIL_DOWNLOADS_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
+  fi
+}
+
 do_scan_json() {
   SUDO_AVAILABLE=false
   scan_all >/dev/null 2>&1
@@ -1130,6 +1360,15 @@ ENDJSON
       scan_ios_backups_subitems_json
       echo ""
       echo "      ]"
+    elif [ "$id" = "app_uninstaller" ]; then
+      echo "      ,\"subitems\": ["
+      scan_app_uninstaller_subitems_json
+      echo ""
+      echo "      ]"
+    elif [ "$id" = "mail_downloads" ]; then
+      echo "      ,\"subitems\": ["
+      scan_mail_downloads_subitems_json
+      echo "      ]"
     fi
     
     local comma=","
@@ -1169,7 +1408,8 @@ do_clean_json() {
   # Temizleme fonksiyon eşleşmesi
   local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
                 clean_logs clean_temp_files clean_developer clean_trash \
-                clean_browser_cache clean_browser_full clean_ios_backups)
+                clean_browser_cache clean_browser_full clean_ios_backups \
+                clean_app_uninstaller clean_mail_downloads)
 
   local idx
   for idx in ${cat_nums[@]+"${cat_nums[@]}"}; do
@@ -1272,6 +1512,22 @@ main() {
       --ios-backups-sub)
         i=$((i + 1))
         IOS_BACKUPS_CLEAN="${args[$i]}"
+        ;;
+      --app-uninstaller-sub)
+        i=$((i + 1))
+        APP_UNINSTALLER_CLEAN="${args[$i]}"
+        ;;
+      --flush-dns)
+        do_flush_dns
+        exit 0
+        ;;
+      --purge-ram)
+        do_purge_ram
+        exit 0
+        ;;
+      --launchagents-clean)
+        do_clean_launchagents
+        exit 0
         ;;
       --help|-h)
         echo ""
