@@ -33,6 +33,9 @@ _APP_NAME_RE     = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')
 _DEVELOPER_WHITELIST = frozenset({
     "derived_data", "broken_links",
     "brew_cache", "docker_prune", "npm_cache", "pip_cache",
+    "device_support", "coresim_caches", "xcode_archives",
+    "simctl_unavailable", "pnpm_cache", "yarn_cache",
+    "cocoapods_cache", "gradle_cache", "maven_repo",
 })
 _BROWSER_WHITELIST = frozenset({
     "safari", "cookies", "chrome", "firefox",
@@ -133,6 +136,8 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._handle_purge_ram()
         elif parsed.path == "/api/launchagents-clean":
             self._handle_launchagents_clean()
+        elif parsed.path == "/api/thin-snapshots":
+            self._handle_thin_snapshots()
         else:
             self._send_error_json("Not found", 404)
 
@@ -230,6 +235,13 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
         data, err = self._run_script(["--launchagents-clean"], timeout=30)
         if err:
             self._send_error_json(f"LaunchAgents temizleme hatası: {err}")
+        else:
+            self._send_json(data)
+
+    def _handle_thin_snapshots(self):
+        data, err = self._run_script(["--thin-snapshots-json"], timeout=120)
+        if err:
+            self._send_error_json(f"Snapshot inceltme hatası: {err}")
         else:
             self._send_json(data)
 

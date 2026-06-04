@@ -77,6 +77,26 @@
       desc: 'Mail eklentilerinden indirilen dosyalar',
       icon: 'i-mail', color: '#0ea5e9', defaultChecked: true, danger: false, tags: [],
     },
+    {
+      key: 'diagnostic_reports', index: 13, name: 'Tanılama Raporları',
+      desc: 'Çökme ve tanılama kayıtları',
+      icon: 'i-log', color: '#0bb8c9', defaultChecked: true, danger: false, tags: [],
+    },
+    {
+      key: 'quicklook_cache', index: 14, name: 'QuickLook Cache',
+      desc: 'Önizleme küçük resim önbelleği',
+      icon: 'i-cache', color: '#4d8eff', defaultChecked: true, danger: false, tags: [],
+    },
+    {
+      key: 'saved_app_state', index: 15, name: 'Kaydedilmiş Uygulama Durumu',
+      desc: 'Pencere/oturum geri yükleme verisi',
+      icon: 'i-temp', color: '#d97706', defaultChecked: false, danger: false, tags: [],
+    },
+    {
+      key: 'other_trash', index: 16, name: 'Diğer Ciltlerin Çöpü',
+      desc: 'Harici disklerdeki çöp kutuları',
+      icon: 'i-trash', color: '#8b8f99', defaultChecked: true, danger: false, tags: [],
+    },
   ];
 
   const KEY_BY_INDEX = Object.fromEntries(CATEGORIES.map((c) => [c.index, c.key]));
@@ -129,6 +149,7 @@
     btnFlushDns:    $('#btnFlushDns'),
     btnPurgeRam:    $('#btnPurgeRam'),
     btnLaunchAgents: $('#btnLaunchAgents'),
+    btnThinSnapshots: $('#btnThinSnapshots'),
     categoryCount: $('#categoryCount'),
     catList:       $('#catList'),
   };
@@ -233,7 +254,7 @@
             <span class="cat-desc">${escapeHtml(cat.desc)}</span>
           </span>
           <span class="cat-bar"><span class="cat-bar-fill"></span></span>
-          <span class="cat-size" data-size="${cat.key}">—</span>
+          <span class="cat-size" data-size="${cat.key}">—</span><span class="cat-risk" data-risk="${escapeAttr(cat.key)}"></span>
           <label class="switch" onclick="event.stopPropagation()">
             <input type="checkbox" ${cat.defaultChecked ? 'checked' : ''} />
             <span class="switch-slider"></span>
@@ -455,6 +476,10 @@
       return { success: true, removed: 3, errors: 0 };
     }
 
+    if (url === '/api/thin-snapshots') {
+      return { success: true, snapshots_before: 2, snapshots_after: 0, note: 'ok', disk_free: '184 GB' };
+    }
+
     return { success: true };
   }
 
@@ -527,6 +552,17 @@
         if (!card) return;
         const sizeEl = $(`.cat-size[data-size="${key}"]`, card);
         if (sizeEl) sizeEl.textContent = info.size_human || formatBytes(info.size_bytes || 0);
+        const riskEl = $(`.cat-risk[data-risk="${key}"]`, card);
+        if (riskEl) {
+          const risk = info.risk;
+          if (risk === 'danger' || risk === 'caution') {
+            riskEl.textContent = risk === 'danger' ? '⚠ Riskli' : '⚠ Dikkat';
+            riskEl.className = `cat-risk risk-${risk}`;
+          } else {
+            riskEl.textContent = '';
+            riskEl.className = 'cat-risk';
+          }
+        }
         const fill = $('.cat-bar-fill', card);
         if (fill) {
           fill.classList.remove('size-lg', 'size-xl');
@@ -683,6 +719,20 @@
       return;
     }
 
+    const dangerSelected = selected
+      .map((idx) => KEY_BY_INDEX[idx])
+      .filter((key) => scanData?.scan?.[key]?.risk === 'danger');
+    if (dangerSelected.length > 0) {
+      const dnames = dangerSelected.map((k) => CAT_BY_KEY[k]?.name || k).join(', ');
+      const dangerOk = confirm(
+        `RİSKLİ kategoriler seçildi (${dnames}). Bu veriler kalıcı olarak silinir ve geri alınamaz. Devam edilsin mi?`
+      );
+      if (!dangerOk) {
+        termLog('Riskli kategoriler onaylanmadı, temizlik iptal edildi.', 'info');
+        return;
+      }
+    }
+
     isLoading = true;
     setLoading(el.btnClean, true);
     setLoading(el.btnScan, true);
@@ -710,7 +760,12 @@
       el.resultsTitle.textContent = 'Temizlik tamamlandı';
       const freedText = data.freed_human || formatBytes(data.freed_bytes || 0);
       el.resultsFreed.textContent = freedText;
-      el.resultsSub.textContent = `${data.items_cleaned || selected.length} kategori · Yeni boş alan ${data.disk_free || '—'}`;
+      const subParts = [`${data.items_cleaned || selected.length} kategori`,
+                        `Yeni boş alan ${data.disk_free || '—'}`];
+      if (data.estimated_human && data.freed_source === 'df') {
+        subParts.push(`Tahmini taranan: ${data.estimated_human}`);
+      }
+      el.resultsSub.textContent = subParts.join(' · ');
       if (data.disk_free) el.sysDiskFree.textContent = data.disk_free;
 
       el.resultsChips.innerHTML = '';
@@ -823,6 +878,21 @@
     }
   }
 
+  async function handleThinSnapshots() {
+    if (el.btnThinSnapshots.disabled) return;
+    setLoading(el.btnThinSnapshots, true);
+    termLog('Yerel snapshotlar inceltiliyor…', 'info');
+    try {
+      const data = await apiFetch('/api/thin-snapshots', { method: 'POST', body: '{}' });
+      termLog(`Snapshot: ${data.snapshots_before} → ${data.snapshots_after} · Boş alan ${data.disk_free || '—'}`, 'success');
+      if (data.disk_free) el.sysDiskFree.textContent = data.disk_free;
+    } catch (err) {
+      termLog(`Snapshot hatası: ${err.message}`, 'error');
+    } finally {
+      setLoading(el.btnThinSnapshots, false);
+    }
+  }
+
   /* ──────────────────────────────────────────────────────────
      Bindings
      ────────────────────────────────────────────────────────── */
@@ -832,6 +902,7 @@
   if (el.btnFlushDns) el.btnFlushDns.addEventListener('click', handleFlushDns);
   if (el.btnPurgeRam) el.btnPurgeRam.addEventListener('click', handlePurgeRam);
   if (el.btnLaunchAgents) el.btnLaunchAgents.addEventListener('click', handleLaunchAgents);
+  if (el.btnThinSnapshots) el.btnThinSnapshots.addEventListener('click', handleThinSnapshots);
 
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {

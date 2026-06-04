@@ -62,15 +62,68 @@ BROWSER_FULL_DIRS=(
   "$HOME/Library/Application Support/Arc"
 )
 
-# Paralel diziler — bash 3.2 (Monterey dahil tüm macOS) ile uyumlu
-CAT_IDS=(user_cache system_cache app_leftovers logs temp_files developer trash \
-         browser_cache browser_full ios_backups app_uninstaller mail_downloads)
-CAT_NAMES=("Kullanıcı Cache" "Sistem Cache" "Uygulama Kalıntıları" \
-            "Loglar" "Geçici Dosyalar" "Geliştirici" "Çöp Kutusu" \
-            "Tarayıcı Cache" "Tarayıcı Tüm Veri" "iOS Yedekleri" \
-            "Tam Uygulama Kaldırıcı" "Mail İndirilenleri")
-CAT_SIZES=(0 0 0 0 0 0 0 0 0 0 0 0)
-CAT_NEEDS_SUDO=(0 1 0 0 0 0 0 0 0 0 0 0)
+# ─── Kategori Registry'si (bash 3.2 uyumlu: tek dizi, pipe-ayrılmış satırlar) ──
+# Format: id|ad|scan_fn|clean_fn|needs_sudo|risk|in_total
+#   risk:     safe | caution | danger
+#   in_total: 1 → manşet TOPLAM'a girer, 0 → girmez (örtüşen/interaktif seçici)
+CATEGORIES=(
+  "user_cache|Kullanıcı Cache|scan_user_cache|clean_user_cache|0|safe|1"
+  "system_cache|Sistem Cache|scan_system_cache|clean_system_cache|1|safe|1"
+  "app_leftovers|Uygulama Kalıntıları|scan_app_leftovers|clean_app_leftovers|0|caution|1"
+  "logs|Loglar|scan_logs|clean_logs|0|safe|1"
+  "temp_files|Geçici Dosyalar|scan_temp_files|clean_temp_files|0|safe|1"
+  "developer|Geliştirici|scan_developer|clean_developer|0|caution|1"
+  "trash|Çöp Kutusu|scan_trash|clean_trash|0|safe|1"
+  "browser_cache|Tarayıcı Cache|scan_browser_cache|clean_browser_cache|0|safe|1"
+  "browser_full|Tarayıcı Tüm Veri|scan_browser_full|clean_browser_full|0|danger|1"
+  "ios_backups|iOS Yedekleri|scan_ios_backups|clean_ios_backups|0|caution|1"
+  "app_uninstaller|Tam Uygulama Kaldırıcı|scan_app_uninstaller|clean_app_uninstaller|0|caution|0"
+  "mail_downloads|Mail İndirilenleri|scan_mail_downloads|clean_mail_downloads|0|safe|1"
+  "diagnostic_reports|Tanılama Raporları|scan_diagnostic_reports|clean_diagnostic_reports|0|safe|1"
+  "quicklook_cache|QuickLook Cache|scan_quicklook_cache|clean_quicklook_cache|0|safe|1"
+  "saved_app_state|Kaydedilmiş Uygulama Durumu|scan_saved_app_state|clean_saved_app_state|0|caution|1"
+  "other_trash|Diğer Ciltlerin Çöpü|scan_other_trash|clean_other_trash|0|safe|1"
+)
+
+# Registry'den paralel dizileri türet (mevcut indeks-tabanlı kod korunur)
+CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
+init_categories() {
+  CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
+  local row id name scan clean sudo risk in_total
+  # scan_fn/clean_fn alanları şimdilik türetilmiyor; ileride cat_field ile okunur.
+  for row in "${CATEGORIES[@]}"; do
+    IFS='|' read -r id name scan clean sudo risk in_total <<< "$row"
+    if [ -z "$in_total" ]; then
+      echo "HATA: bozuk CATEGORIES satırı: $row" >&2
+      exit 1
+    fi
+    CAT_IDS+=("$id"); CAT_NAMES+=("$name"); CAT_NEEDS_SUDO+=("$sudo")
+    CAT_RISKS+=("$risk"); CAT_IN_TOTAL+=("$in_total"); CAT_SIZES+=(0)
+  done
+}
+init_categories
+
+# Registry satırından alan oku: cat_field <index> <field>
+# field: id|name|scan_fn|clean_fn|needs_sudo|risk|in_total
+cat_field() {
+  local idx="$1" field="$2"
+  local id name scan clean sudo risk in_total
+  IFS='|' read -r id name scan clean sudo risk in_total <<< "${CATEGORIES[$idx]}"
+  case "$field" in
+    id) echo "$id" ;; name) echo "$name" ;; scan_fn) echo "$scan" ;;
+    clean_fn) echo "$clean" ;; needs_sudo) echo "$sudo" ;;
+    risk) echo "$risk" ;; in_total) echo "$in_total" ;;
+  esac
+}
+
+# id → indeks (bulunamazsa -1)
+cat_index_by_id() {
+  local want="$1" i
+  for i in "${!CAT_IDS[@]}"; do
+    [ "${CAT_IDS[$i]}" = "$want" ] && { echo "$i"; return; }
+  done
+  echo "-1"
+}
 
 # ─── UI ─────────────────────────────────────────────────────────────────────
 header() {
@@ -112,13 +165,19 @@ get_size_bytes() {
 get_dir_size_bytes() {
   local path="$1"
   [ -d "$path" ] || { echo "0"; return; }
-  local total=0
-  local item
-  while IFS= read -r -d '' item; do
-    local s=0
-    s=$(du -sk "$item" 2>/dev/null | awk '{print $1 * 1024}') || s=0
-    total=$((total + s))
-  done < <(find "$path" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+  # Boş dizin: du'yu hiç çağırma (macOS xargs'ta -r yok).
+  local first
+  first=$(find "$path" -maxdepth 1 -mindepth 1 -print -quit 2>/dev/null)
+  [ -z "$first" ] && { echo "0"; return; }
+  # Tek du çağrısı: hardlink'ler çağrı içinde tekilleşir.
+  # NOT: ~17k+ doğrudan çocuk olan dizinlerde xargs ARG_MAX'te bölünebilir ve
+  # awk END yalnız son batch'in 'total'ını alıp eksik sayabilir. Gerçek kazanç
+  # df farkından ölçüldüğü için bu yalnızca tahmini etkiler (kabul edilebilir).
+  local total
+  total=$(find "$path" -maxdepth 1 -mindepth 1 -print0 2>/dev/null \
+            | xargs -0 du -sck 2>/dev/null \
+            | awk 'END {print $1 * 1024}')
+  [ -z "$total" ] && total=0
   echo "$total"
 }
 
@@ -300,7 +359,8 @@ scan_app_leftovers() {
       Audio|Fonts|Compositions|ColorSync|Spelling|Dictionaries|\
       AddressBook|Calendars|Mail|Messages|Safari|\
       CallHistoryDB|CallHistoryTransactions|CloudDocs|Dock|\
-      iCloud|Knowledge|Network|VirtualMachines|DiskImages) continue ;;
+      iCloud|Knowledge|Network|VirtualMachines|DiskImages|\
+      Google|Firefox|BraveSoftware|"Microsoft Edge"|com.operasoftware.Opera|Arc) continue ;;
     esac
     s=$(get_size_bytes "$item") 2>/dev/null || s=0
     [ -z "$s" ] && s=0
@@ -413,12 +473,65 @@ scan_mail_downloads() {
   CAT_SIZES[11]=$s
 }
 
+scan_diagnostic_reports() {
+  local i; i=$(cat_index_by_id diagnostic_reports)
+  CAT_SIZES[$i]=$(get_dir_size_bytes "$HOME/Library/Logs/DiagnosticReports")
+}
+clean_diagnostic_reports() {
+  header "🩺 Tanılama Raporları Temizleniyor"
+  safe_rm_contents "$HOME/Library/Logs/DiagnosticReports" "DiagnosticReports"
+}
+
+scan_quicklook_cache() {
+  local i; i=$(cat_index_by_id quicklook_cache)
+  local qldir
+  qldir="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)com.apple.QuickLook.thumbnailcache"
+  CAT_SIZES[$i]=$(get_dir_size_bytes "$qldir")
+}
+clean_quicklook_cache() {
+  header "🖼️  QuickLook Cache Temizleniyor"
+  if command -v qlmanage &>/dev/null; then
+    qlmanage -r cache >/dev/null 2>&1 \
+      && success "QuickLook thumbnail cache sıfırlandı" \
+      || warn "qlmanage çalıştırılamadı"
+  else
+    warn "qlmanage bulunamadı"
+  fi
+}
+
+scan_saved_app_state() {
+  local i; i=$(cat_index_by_id saved_app_state)
+  CAT_SIZES[$i]=$(get_dir_size_bytes "$HOME/Library/Saved Application State")
+}
+clean_saved_app_state() {
+  header "💾 Kaydedilmiş Uygulama Durumu Temizleniyor"
+  safe_rm_contents "$HOME/Library/Saved Application State" "Saved Application State"
+}
+
+scan_other_trash() {
+  local i; i=$(cat_index_by_id other_trash)
+  local total=0 d s
+  for d in /Volumes/*/.Trashes; do
+    [ -d "$d" ] || continue
+    s=$(get_dir_size_bytes "$d") || s=0
+    total=$((total + s))
+  done
+  CAT_SIZES[$i]=$total
+}
+clean_other_trash() {
+  header "🗑️  Diğer Ciltlerin Çöpü Temizleniyor"
+  local d
+  for d in /Volumes/*/.Trashes; do
+    [ -d "$d" ] || continue
+    safe_rm_contents "$d" "$d"
+  done
+}
+
 scan_all() {
   header "🔍 Taranıyor..."
-  local fns=(scan_user_cache scan_system_cache scan_app_leftovers \
-             scan_logs scan_temp_files scan_developer scan_trash \
-             scan_browser_cache scan_browser_full scan_ios_backups \
-             scan_app_uninstaller scan_mail_downloads)
+  local fns=()
+  local _i
+  for _i in "${!CAT_IDS[@]}"; do fns+=("$(cat_field "$_i" scan_fn)"); done
   local i
   for i in "${!fns[@]}"; do
     echo -ne "  ${DIM}${CAT_NAMES[$i]}...${NC}\r"
@@ -446,11 +559,11 @@ print_scan_table() {
       printf "  ${DIM}%-3s  %-26s  %-12s  %b${NC}\n" \
         "$((i+1))" "${CAT_NAMES[$i]}" "—" "$sudo_tag"
     fi
-    total_bytes=$((total_bytes + CAT_SIZES[$i]))
+    [ "${CAT_IN_TOTAL[$i]}" -eq 1 ] && total_bytes=$((total_bytes + CAT_SIZES[$i]))
   done
   separator
   local total_h; total_h=$(format_bytes "$total_bytes")
-  printf "  ${BOLD}%-3s  %-26s  %-12s${NC}\n" "" "TOPLAM" "$total_h"
+  printf "  ${BOLD}%-3s  %-26s  %-12s${NC}\n" "" "TAHMİNİ TOPLAM" "$total_h"
   echo ""
   info "Mevcut boş disk alanı: ${BOLD}$(get_free_disk)${NC}"
   echo ""
@@ -911,6 +1024,28 @@ clean_developer() {
       elif [ "$item" = "pip_cache" ]; then
         local pip_cache="$HOME/Library/Caches/pip"
         [ -d "$pip_cache" ] && safe_rm_contents "$pip_cache" "pip Cache"
+      elif [ "$item" = "device_support" ]; then
+        safe_rm_contents "$HOME/Library/Developer/Xcode/iOS DeviceSupport" "iOS DeviceSupport"
+      elif [ "$item" = "coresim_caches" ]; then
+        safe_rm_contents "$HOME/Library/Developer/CoreSimulator/Caches" "CoreSimulator Caches"
+      elif [ "$item" = "xcode_archives" ]; then
+        safe_rm_contents "$HOME/Library/Developer/Xcode/Archives" "Xcode Archives"
+      elif [ "$item" = "cocoapods_cache" ]; then
+        safe_rm_contents "$HOME/Library/Caches/CocoaPods" "CocoaPods Cache"
+      elif [ "$item" = "pnpm_cache" ]; then
+        safe_rm_contents "$HOME/Library/pnpm/store" "pnpm Store"
+      elif [ "$item" = "yarn_cache" ]; then
+        safe_rm_contents "$HOME/Library/Caches/Yarn" "Yarn Cache"
+      elif [ "$item" = "gradle_cache" ]; then
+        safe_rm_contents "$HOME/.gradle/caches" "Gradle Cache"
+      elif [ "$item" = "maven_repo" ]; then
+        safe_rm_contents "$HOME/.m2/repository" "Maven Repository"
+      elif [ "$item" = "simctl_unavailable" ]; then
+        if command -v xcrun &>/dev/null; then
+          xcrun simctl delete unavailable >/dev/null 2>&1 \
+            && success "Erişilmez simülatörler silindi" \
+            || warn "simctl çalıştırılamadı"
+        fi
       fi
     done
     return
@@ -1018,10 +1153,9 @@ category_selector() {
 
 run_clean() {
   local selected_indices=("$@")
-  local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
-                clean_logs clean_temp_files clean_developer clean_trash \
-                clean_browser_cache clean_browser_full clean_ios_backups \
-                clean_app_uninstaller clean_mail_downloads)
+  local fn_map=()
+  local _i
+  for _i in "${!CAT_IDS[@]}"; do fn_map+=("$(cat_field "$_i" clean_fn)"); done
   local idx
   for idx in ${selected_indices[@]+"${selected_indices[@]}"}; do
     local real_idx=$((idx - 1))
@@ -1090,6 +1224,18 @@ scan_app_leftovers_subitems_json() {
   done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 }
 
+# id, görünen ad, yol, risk → JSON alt-öğe satırı (LEADING virgüllü; yol yoksa hiçbir şey yazma)
+emit_dev_subitem() {
+  local id="$1" name="$2" path="$3" risk="$4"
+  [ -e "$path" ] || return 0
+  local s; s=$(get_size_bytes "$path") || s=0
+  [ "$s" -le 0 ] 2>/dev/null && return 0
+  local sz_h; sz_h=$(format_bytes "$s")
+  local esc_name; esc_name=$(json_escape_str "$name")
+  local esc_path; esc_path=$(json_escape_str "$path")
+  echo "        ,{\"id\": \"$id\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"risk\": \"$risk\", \"is_orphaned\": false}"
+}
+
 scan_developer_subitems_json() {
   local deriveddata="$HOME/Library/Developer/Xcode/DerivedData"
   local s_derived=0
@@ -1155,6 +1301,23 @@ scan_developer_subitems_json() {
   local sz_pip; sz_pip=$(format_bytes "$s_pip")
   local esc_pip_path; esc_pip_path=$(json_escape_str "$pip_cache_path")
   echo "        ,{\"id\": \"pip_cache\", \"name\": \"pip Cache\", \"path\": \"$esc_pip_path\", \"size_bytes\": $s_pip, \"size_human\": \"$sz_pip\", \"is_orphaned\": false}"
+
+  emit_dev_subitem "device_support" "iOS DeviceSupport" \
+    "$HOME/Library/Developer/Xcode/iOS DeviceSupport" "safe"
+  emit_dev_subitem "coresim_caches" "CoreSimulator Caches" \
+    "$HOME/Library/Developer/CoreSimulator/Caches" "safe"
+  emit_dev_subitem "xcode_archives" "Xcode Archives" \
+    "$HOME/Library/Developer/Xcode/Archives" "caution"
+  emit_dev_subitem "cocoapods_cache" "CocoaPods Cache" \
+    "$HOME/Library/Caches/CocoaPods" "safe"
+  emit_dev_subitem "pnpm_cache" "pnpm Store" \
+    "$HOME/Library/pnpm/store" "safe"
+  emit_dev_subitem "yarn_cache" "Yarn Cache" \
+    "$HOME/Library/Caches/Yarn" "safe"
+  emit_dev_subitem "gradle_cache" "Gradle Cache" \
+    "$HOME/.gradle/caches" "caution"
+  emit_dev_subitem "maven_repo" "Maven Repository" \
+    "$HOME/.m2/repository" "caution"
 }
 
 scan_browser_full_subitems_json() {
@@ -1261,6 +1424,24 @@ do_clean_launchagents() {
   printf '{"success":true,"removed":%d,"errors":%d}\n' "$removed" "${#errors[@]}"
 }
 
+do_thin_snapshots_json() {
+  JSON_MODE=true
+  local before after note="ok"
+  before=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c "com.apple.TimeMachine" || true)
+  [ -z "$before" ] && before=0
+  if [ "${APPLE_CLEANUP_DRYRUN:-0}" = "1" ]; then
+    note="dryrun"
+    after=$before
+  else
+    # 10GB hedef, urgency 4 (agresif). Yetki/snapshot yoksa sessiz başarısız.
+    tmutil thinLocalSnapshots / 10000000000 4 >/dev/null 2>&1 || note="yetki_yok_veya_snapshot_yok"
+    after=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c "com.apple.TimeMachine" || true)
+    [ -z "$after" ] && after=0
+  fi
+  printf '{"success":true,"snapshots_before":%s,"snapshots_after":%s,"note":"%s","disk_free":"%s"}\n' \
+    "$before" "$after" "$note" "$(get_free_disk)"
+}
+
 get_app_bundle_id() {
   local app_path="$1"
   local plist="$app_path/Contents/Info.plist"
@@ -1319,7 +1500,7 @@ do_scan_json() {
   local total_bytes=0
   local i
   for i in "${!CAT_IDS[@]}"; do
-    total_bytes=$((total_bytes + CAT_SIZES[$i]))
+    [ "${CAT_IN_TOTAL[$i]}" -eq 1 ] && total_bytes=$((total_bytes + CAT_SIZES[$i]))
   done
 
   local total_h; total_h=$(format_bytes "$total_bytes")
@@ -1338,8 +1519,9 @@ ENDJSON
     echo "    \"$id\": {"
     echo "      \"size_bytes\": ${CAT_SIZES[$i]},"
     echo "      \"size_human\": \"$sz_h\","
-    echo "      \"needs_sudo\": $needs_sudo"
-    
+    echo "      \"needs_sudo\": $needs_sudo,"
+    echo "      \"risk\": \"${CAT_RISKS[$i]}\""
+
     if [ "$id" = "app_leftovers" ]; then
       echo "      ,\"subitems\": ["
       scan_app_leftovers_subitems_json
@@ -1405,11 +1587,14 @@ do_clean_json() {
   TOTAL_ITEMS=0
   CLEAN_RESULTS=()
 
+  # Gerçek kazanç ölçümü için temizlik öncesi boş alan (KB, available on /)
+  local df_before
+  df_before=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
+
   # Temizleme fonksiyon eşleşmesi
-  local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
-                clean_logs clean_temp_files clean_developer clean_trash \
-                clean_browser_cache clean_browser_full clean_ios_backups \
-                clean_app_uninstaller clean_mail_downloads)
+  local fn_map=()
+  local _i
+  for _i in "${!CAT_IDS[@]}"; do fn_map+=("$(cat_field "$_i" clean_fn)"); done
 
   local idx
   for idx in ${cat_nums[@]+"${cat_nums[@]}"}; do
@@ -1429,13 +1614,29 @@ do_clean_json() {
     fi
   done
 
-  local freed_h; freed_h=$(format_bytes "$TOTAL_FREED")
+  # Temizlik sonrası boş alan; gerçek kazanç = df farkı (bayt)
+  local df_after real_freed freed_source
+  df_after=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
+  if [ -n "$df_before" ] && [ -n "$df_after" ]; then
+    real_freed=$(( (df_after - df_before) * 1024 ))
+    [ "$real_freed" -lt 0 ] && real_freed=0   # başka süreçler veri yazmış olabilir
+    freed_source="df"
+  else
+    real_freed=$TOTAL_FREED                    # df okunamadı → tahmine düş
+    freed_source="estimated"
+  fi
+  local estimated_bytes=$TOTAL_FREED
+  local freed_h; freed_h=$(format_bytes "$real_freed")
+  local est_h; est_h=$(format_bytes "$estimated_bytes")
 
   # JSON çıktı
   echo '{'
   echo '  "success": true,'
-  echo "  \"freed_bytes\": $TOTAL_FREED,"
+  echo "  \"freed_bytes\": $real_freed,"
   echo "  \"freed_human\": \"$freed_h\","
+  echo "  \"estimated_bytes\": $estimated_bytes,"
+  echo "  \"estimated_human\": \"$est_h\","
+  echo "  \"freed_source\": \"$freed_source\","
   echo "  \"items_cleaned\": $TOTAL_ITEMS,"
   echo "  \"disk_free\": \"$(get_free_disk)\","
   echo '  "details": ['
@@ -1529,6 +1730,10 @@ main() {
         do_clean_launchagents
         exit 0
         ;;
+      --thin-snapshots-json)
+        do_thin_snapshots_json
+        exit 0
+        ;;
       --help|-h)
         echo ""
         echo -e "${BOLD}clean_mac v${VERSION}${NC} — macOS Sistem Temizleyici (Güvenli Sürüm)"
@@ -1553,6 +1758,7 @@ main() {
         echo "  --browser-full-sub 'c,s' Sıfırlanacak tarayıcı kodları (chrome, safari...)"
         echo "  --developer-sub 'd,b'    Xcode DerivedData (derived_data) veya Kırık Symlinkler (broken_links)"
         echo "  --status-json            Sistem bilgisini JSON döner"
+        echo "  --thin-snapshots-json    Yerel snapshot'ları inceltir, JSON döner"
         echo ""
         echo "Not: Downloads klasörüne dokunulmaz."
         echo ""
