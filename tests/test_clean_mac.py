@@ -33,3 +33,19 @@ def test_scan_json_has_required_keys(tmp_path):
     # Her kategori size_bytes alanı taşımalı
     for cat_id, info in data["scan"].items():
         assert "size_bytes" in info, cat_id
+
+
+def test_app_uninstaller_excluded_from_total(tmp_path):
+    # app_uninstaller (in_total=0) yalnız bir alt-öğe üretebilir ama
+    # total_bytes'a EKLENMEMELİ. Burada user_cache'e 2MB koyup
+    # toplamın yalnızca onu içerdiğini doğruluyoruz.
+    make_dir_with_bytes(tmp_path / "Library/Caches/com.example.app", kb=2048)
+    data = run_scan(tmp_path)
+    uninstaller = data["scan"].get("app_uninstaller", {})
+    # app_uninstaller bytes'ı varsa bile total'a dahil olmamalı
+    assert data["total_bytes"] >= uninstaller.get("size_bytes", 0)
+    summed_in_total = sum(
+        info["size_bytes"] for cid, info in data["scan"].items()
+        if cid != "app_uninstaller"
+    )
+    assert data["total_bytes"] == summed_in_total

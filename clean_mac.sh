@@ -62,15 +62,37 @@ BROWSER_FULL_DIRS=(
   "$HOME/Library/Application Support/Arc"
 )
 
-# Paralel diziler — bash 3.2 (Monterey dahil tüm macOS) ile uyumlu
-CAT_IDS=(user_cache system_cache app_leftovers logs temp_files developer trash \
-         browser_cache browser_full ios_backups app_uninstaller mail_downloads)
-CAT_NAMES=("Kullanıcı Cache" "Sistem Cache" "Uygulama Kalıntıları" \
-            "Loglar" "Geçici Dosyalar" "Geliştirici" "Çöp Kutusu" \
-            "Tarayıcı Cache" "Tarayıcı Tüm Veri" "iOS Yedekleri" \
-            "Tam Uygulama Kaldırıcı" "Mail İndirilenleri")
-CAT_SIZES=(0 0 0 0 0 0 0 0 0 0 0 0)
-CAT_NEEDS_SUDO=(0 1 0 0 0 0 0 0 0 0 0 0)
+# ─── Kategori Registry'si (bash 3.2 uyumlu: tek dizi, pipe-ayrılmış satırlar) ──
+# Format: id|ad|scan_fn|clean_fn|needs_sudo|risk|in_total
+#   risk:     safe | caution | danger
+#   in_total: 1 → manşet TOPLAM'a girer, 0 → girmez (örtüşen/interaktif seçici)
+CATEGORIES=(
+  "user_cache|Kullanıcı Cache|scan_user_cache|clean_user_cache|0|safe|1"
+  "system_cache|Sistem Cache|scan_system_cache|clean_system_cache|1|safe|1"
+  "app_leftovers|Uygulama Kalıntıları|scan_app_leftovers|clean_app_leftovers|0|caution|1"
+  "logs|Loglar|scan_logs|clean_logs|0|safe|1"
+  "temp_files|Geçici Dosyalar|scan_temp_files|clean_temp_files|0|safe|1"
+  "developer|Geliştirici|scan_developer|clean_developer|0|caution|1"
+  "trash|Çöp Kutusu|scan_trash|clean_trash|0|safe|1"
+  "browser_cache|Tarayıcı Cache|scan_browser_cache|clean_browser_cache|0|safe|1"
+  "browser_full|Tarayıcı Tüm Veri|scan_browser_full|clean_browser_full|0|danger|1"
+  "ios_backups|iOS Yedekleri|scan_ios_backups|clean_ios_backups|0|caution|1"
+  "app_uninstaller|Tam Uygulama Kaldırıcı|scan_app_uninstaller|clean_app_uninstaller|0|caution|0"
+  "mail_downloads|Mail İndirilenleri|scan_mail_downloads|clean_mail_downloads|0|safe|1"
+)
+
+# Registry'den paralel dizileri türet (mevcut indeks-tabanlı kod korunur)
+CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
+init_categories() {
+  CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
+  local row id name scan clean sudo risk in_total
+  for row in "${CATEGORIES[@]}"; do
+    IFS='|' read -r id name scan clean sudo risk in_total <<< "$row"
+    CAT_IDS+=("$id"); CAT_NAMES+=("$name"); CAT_NEEDS_SUDO+=("$sudo")
+    CAT_RISKS+=("$risk"); CAT_IN_TOTAL+=("$in_total"); CAT_SIZES+=(0)
+  done
+}
+init_categories
 
 # ─── UI ─────────────────────────────────────────────────────────────────────
 header() {
@@ -446,7 +468,7 @@ print_scan_table() {
       printf "  ${DIM}%-3s  %-26s  %-12s  %b${NC}\n" \
         "$((i+1))" "${CAT_NAMES[$i]}" "—" "$sudo_tag"
     fi
-    total_bytes=$((total_bytes + CAT_SIZES[$i]))
+    [ "${CAT_IN_TOTAL[$i]}" -eq 1 ] && total_bytes=$((total_bytes + CAT_SIZES[$i]))
   done
   separator
   local total_h; total_h=$(format_bytes "$total_bytes")
@@ -1319,7 +1341,7 @@ do_scan_json() {
   local total_bytes=0
   local i
   for i in "${!CAT_IDS[@]}"; do
-    total_bytes=$((total_bytes + CAT_SIZES[$i]))
+    [ "${CAT_IN_TOTAL[$i]}" -eq 1 ] && total_bytes=$((total_bytes + CAT_SIZES[$i]))
   done
 
   local total_h; total_h=$(format_bytes "$total_bytes")
