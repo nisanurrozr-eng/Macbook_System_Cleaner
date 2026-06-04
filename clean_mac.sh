@@ -79,6 +79,10 @@ CATEGORIES=(
   "ios_backups|iOS Yedekleri|scan_ios_backups|clean_ios_backups|0|caution|1"
   "app_uninstaller|Tam Uygulama Kaldırıcı|scan_app_uninstaller|clean_app_uninstaller|0|caution|0"
   "mail_downloads|Mail İndirilenleri|scan_mail_downloads|clean_mail_downloads|0|safe|1"
+  "diagnostic_reports|Tanılama Raporları|scan_diagnostic_reports|clean_diagnostic_reports|0|safe|1"
+  "quicklook_cache|QuickLook Cache|scan_quicklook_cache|clean_quicklook_cache|0|safe|1"
+  "saved_app_state|Kaydedilmiş Uygulama Durumu|scan_saved_app_state|clean_saved_app_state|0|caution|1"
+  "other_trash|Diğer Ciltlerin Çöpü|scan_other_trash|clean_other_trash|0|safe|1"
 )
 
 # Registry'den paralel dizileri türet (mevcut indeks-tabanlı kod korunur)
@@ -98,6 +102,28 @@ init_categories() {
   done
 }
 init_categories
+
+# Registry satırından alan oku: cat_field <index> <field>
+# field: id|name|scan_fn|clean_fn|needs_sudo|risk|in_total
+cat_field() {
+  local idx="$1" field="$2"
+  local id name scan clean sudo risk in_total
+  IFS='|' read -r id name scan clean sudo risk in_total <<< "${CATEGORIES[$idx]}"
+  case "$field" in
+    id) echo "$id" ;; name) echo "$name" ;; scan_fn) echo "$scan" ;;
+    clean_fn) echo "$clean" ;; needs_sudo) echo "$sudo" ;;
+    risk) echo "$risk" ;; in_total) echo "$in_total" ;;
+  esac
+}
+
+# id → indeks (bulunamazsa -1)
+cat_index_by_id() {
+  local want="$1" i
+  for i in "${!CAT_IDS[@]}"; do
+    [ "${CAT_IDS[$i]}" = "$want" ] && { echo "$i"; return; }
+  done
+  echo "-1"
+}
 
 # ─── UI ─────────────────────────────────────────────────────────────────────
 header() {
@@ -447,12 +473,65 @@ scan_mail_downloads() {
   CAT_SIZES[11]=$s
 }
 
+scan_diagnostic_reports() {
+  local i; i=$(cat_index_by_id diagnostic_reports)
+  CAT_SIZES[$i]=$(get_dir_size_bytes "$HOME/Library/Logs/DiagnosticReports")
+}
+clean_diagnostic_reports() {
+  header "🩺 Tanılama Raporları Temizleniyor"
+  safe_rm_contents "$HOME/Library/Logs/DiagnosticReports" "DiagnosticReports"
+}
+
+scan_quicklook_cache() {
+  local i; i=$(cat_index_by_id quicklook_cache)
+  local qldir
+  qldir="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)com.apple.QuickLook.thumbnailcache"
+  CAT_SIZES[$i]=$(get_dir_size_bytes "$qldir")
+}
+clean_quicklook_cache() {
+  header "🖼️  QuickLook Cache Temizleniyor"
+  if command -v qlmanage &>/dev/null; then
+    qlmanage -r cache >/dev/null 2>&1 \
+      && success "QuickLook thumbnail cache sıfırlandı" \
+      || warn "qlmanage çalıştırılamadı"
+  else
+    warn "qlmanage bulunamadı"
+  fi
+}
+
+scan_saved_app_state() {
+  local i; i=$(cat_index_by_id saved_app_state)
+  CAT_SIZES[$i]=$(get_dir_size_bytes "$HOME/Library/Saved Application State")
+}
+clean_saved_app_state() {
+  header "💾 Kaydedilmiş Uygulama Durumu Temizleniyor"
+  safe_rm_contents "$HOME/Library/Saved Application State" "Saved Application State"
+}
+
+scan_other_trash() {
+  local i; i=$(cat_index_by_id other_trash)
+  local total=0 d s
+  for d in /Volumes/*/.Trashes; do
+    [ -d "$d" ] || continue
+    s=$(get_dir_size_bytes "$d") || s=0
+    total=$((total + s))
+  done
+  CAT_SIZES[$i]=$total
+}
+clean_other_trash() {
+  header "🗑️  Diğer Ciltlerin Çöpü Temizleniyor"
+  local d
+  for d in /Volumes/*/.Trashes; do
+    [ -d "$d" ] || continue
+    safe_rm_contents "$d" "$d"
+  done
+}
+
 scan_all() {
   header "🔍 Taranıyor..."
-  local fns=(scan_user_cache scan_system_cache scan_app_leftovers \
-             scan_logs scan_temp_files scan_developer scan_trash \
-             scan_browser_cache scan_browser_full scan_ios_backups \
-             scan_app_uninstaller scan_mail_downloads)
+  local fns=()
+  local _i
+  for _i in "${!CAT_IDS[@]}"; do fns+=("$(cat_field "$_i" scan_fn)"); done
   local i
   for i in "${!fns[@]}"; do
     echo -ne "  ${DIM}${CAT_NAMES[$i]}...${NC}\r"
@@ -1074,10 +1153,9 @@ category_selector() {
 
 run_clean() {
   local selected_indices=("$@")
-  local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
-                clean_logs clean_temp_files clean_developer clean_trash \
-                clean_browser_cache clean_browser_full clean_ios_backups \
-                clean_app_uninstaller clean_mail_downloads)
+  local fn_map=()
+  local _i
+  for _i in "${!CAT_IDS[@]}"; do fn_map+=("$(cat_field "$_i" clean_fn)"); done
   local idx
   for idx in ${selected_indices[@]+"${selected_indices[@]}"}; do
     local real_idx=$((idx - 1))
@@ -1496,10 +1574,9 @@ do_clean_json() {
   df_before=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
 
   # Temizleme fonksiyon eşleşmesi
-  local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
-                clean_logs clean_temp_files clean_developer clean_trash \
-                clean_browser_cache clean_browser_full clean_ios_backups \
-                clean_app_uninstaller clean_mail_downloads)
+  local fn_map=()
+  local _i
+  for _i in "${!CAT_IDS[@]}"; do fn_map+=("$(cat_field "$_i" clean_fn)"); done
 
   local idx
   for idx in ${cat_nums[@]+"${cat_nums[@]}"}; do

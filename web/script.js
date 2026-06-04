@@ -77,6 +77,26 @@
       desc: 'Mail eklentilerinden indirilen dosyalar',
       icon: 'i-mail', color: '#0ea5e9', defaultChecked: true, danger: false, tags: [],
     },
+    {
+      key: 'diagnostic_reports', index: 13, name: 'Tanılama Raporları',
+      desc: 'Çökme ve tanılama kayıtları',
+      icon: 'i-log', color: '#0bb8c9', defaultChecked: true, danger: false, tags: [],
+    },
+    {
+      key: 'quicklook_cache', index: 14, name: 'QuickLook Cache',
+      desc: 'Önizleme küçük resim önbelleği',
+      icon: 'i-cache', color: '#4d8eff', defaultChecked: true, danger: false, tags: [],
+    },
+    {
+      key: 'saved_app_state', index: 15, name: 'Kaydedilmiş Uygulama Durumu',
+      desc: 'Pencere/oturum geri yükleme verisi',
+      icon: 'i-temp', color: '#d97706', defaultChecked: false, danger: false, tags: [],
+    },
+    {
+      key: 'other_trash', index: 16, name: 'Diğer Ciltlerin Çöpü',
+      desc: 'Harici disklerdeki çöp kutuları',
+      icon: 'i-trash', color: '#8b8f99', defaultChecked: true, danger: false, tags: [],
+    },
   ];
 
   const KEY_BY_INDEX = Object.fromEntries(CATEGORIES.map((c) => [c.index, c.key]));

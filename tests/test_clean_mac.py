@@ -112,3 +112,10 @@ def test_developer_subitems_include_new_caches(tmp_path):
     g = next(s for s in subs if s["id"] == "gradle_cache")
     assert g["risk"] == "caution"
     assert g["size_bytes"] > 0
+
+
+def test_new_system_categories_present(tmp_path):
+    data = run_scan(tmp_path)
+    for cid in ["diagnostic_reports", "quicklook_cache",
+                "saved_app_state", "other_trash"]:
+        assert cid in data["scan"], cid
