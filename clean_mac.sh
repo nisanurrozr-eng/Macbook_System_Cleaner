@@ -86,8 +86,13 @@ CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_
 init_categories() {
   CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
   local row id name scan clean sudo risk in_total
+  # scan_fn/clean_fn alanları şimdilik türetilmiyor; ileride cat_field ile okunur.
   for row in "${CATEGORIES[@]}"; do
     IFS='|' read -r id name scan clean sudo risk in_total <<< "$row"
+    if [ -z "$in_total" ]; then
+      echo "HATA: bozuk CATEGORIES satırı: $row" >&2
+      exit 1
+    fi
     CAT_IDS+=("$id"); CAT_NAMES+=("$name"); CAT_NEEDS_SUDO+=("$sudo")
     CAT_RISKS+=("$risk"); CAT_IN_TOTAL+=("$in_total"); CAT_SIZES+=(0)
   done
