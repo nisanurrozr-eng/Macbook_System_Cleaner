@@ -254,7 +254,7 @@
             <span class="cat-desc">${escapeHtml(cat.desc)}</span>
           </span>
           <span class="cat-bar"><span class="cat-bar-fill"></span></span>
-          <span class="cat-size" data-size="${cat.key}">—</span>
+          <span class="cat-size" data-size="${cat.key}">—</span><span class="cat-risk" data-risk="${escapeAttr(cat.key)}"></span>
           <label class="switch" onclick="event.stopPropagation()">
             <input type="checkbox" ${cat.defaultChecked ? 'checked' : ''} />
             <span class="switch-slider"></span>
@@ -552,6 +552,17 @@
         if (!card) return;
         const sizeEl = $(`.cat-size[data-size="${key}"]`, card);
         if (sizeEl) sizeEl.textContent = info.size_human || formatBytes(info.size_bytes || 0);
+        const riskEl = $(`.cat-risk[data-risk="${key}"]`, card);
+        if (riskEl) {
+          const risk = info.risk;
+          if (risk === 'danger' || risk === 'caution') {
+            riskEl.textContent = risk === 'danger' ? '⚠ Riskli' : '⚠ Dikkat';
+            riskEl.className = `cat-risk risk-${risk}`;
+          } else {
+            riskEl.textContent = '';
+            riskEl.className = 'cat-risk';
+          }
+        }
         const fill = $('.cat-bar-fill', card);
         if (fill) {
           fill.classList.remove('size-lg', 'size-xl');
@@ -706,6 +717,20 @@
     if (!confirmed) {
       termLog('Temizlik iptal edildi.', 'info');
       return;
+    }
+
+    const dangerSelected = selected
+      .map((idx) => KEY_BY_INDEX[idx])
+      .filter((key) => scanData?.scan?.[key]?.risk === 'danger');
+    if (dangerSelected.length > 0) {
+      const dnames = dangerSelected.map((k) => CAT_BY_KEY[k]?.name || k).join(', ');
+      const dangerOk = confirm(
+        `RİSKLİ kategoriler seçildi (${dnames}). Bu veriler kalıcı olarak silinir ve geri alınamaz. Devam edilsin mi?`
+      );
+      if (!dangerOk) {
+        termLog('Riskli kategoriler onaylanmadı, temizlik iptal edildi.', 'info');
+        return;
+      }
     }
 
     isLoading = true;
