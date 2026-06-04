@@ -35,6 +35,12 @@ def test_scan_json_has_required_keys(tmp_path):
         assert "size_bytes" in info, cat_id
 
 
+def test_scan_json_includes_risk_per_category(tmp_path):
+    data = run_scan(tmp_path)
+    assert data["scan"]["browser_full"]["risk"] == "danger"
+    assert data["scan"]["user_cache"]["risk"] == "safe"
+
+
 def test_app_uninstaller_excluded_from_total(tmp_path):
     # app_uninstaller (in_total=0) yalnız bir alt-öğe üretebilir ama
     # total_bytes'a EKLENMEMELİ. Burada user_cache'e 2MB koyup

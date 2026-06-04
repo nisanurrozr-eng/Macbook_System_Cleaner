@@ -477,7 +477,7 @@ print_scan_table() {
   done
   separator
   local total_h; total_h=$(format_bytes "$total_bytes")
-  printf "  ${BOLD}%-3s  %-26s  %-12s${NC}\n" "" "TOPLAM" "$total_h"
+  printf "  ${BOLD}%-3s  %-26s  %-12s${NC}\n" "" "TAHMİNİ TOPLAM" "$total_h"
   echo ""
   info "Mevcut boş disk alanı: ${BOLD}$(get_free_disk)${NC}"
   echo ""
@@ -1365,8 +1365,9 @@ ENDJSON
     echo "    \"$id\": {"
     echo "      \"size_bytes\": ${CAT_SIZES[$i]},"
     echo "      \"size_human\": \"$sz_h\","
-    echo "      \"needs_sudo\": $needs_sudo"
-    
+    echo "      \"needs_sudo\": $needs_sudo,"
+    echo "      \"risk\": \"${CAT_RISKS[$i]}\""
+
     if [ "$id" = "app_leftovers" ]; then
       echo "      ,\"subitems\": ["
       scan_app_leftovers_subitems_json
