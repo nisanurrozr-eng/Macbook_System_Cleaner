@@ -954,7 +954,7 @@ clean_developer() {
       elif [ "$item" = "cocoapods_cache" ]; then
         safe_rm_contents "$HOME/Library/Caches/CocoaPods" "CocoaPods Cache"
       elif [ "$item" = "pnpm_cache" ]; then
-        safe_rm_contents "$HOME/Library/pnpm" "pnpm Store"
+        safe_rm_contents "$HOME/Library/pnpm/store" "pnpm Store"
       elif [ "$item" = "yarn_cache" ]; then
         safe_rm_contents "$HOME/Library/Caches/Yarn" "Yarn Cache"
       elif [ "$item" = "gradle_cache" ]; then
@@ -1155,7 +1155,7 @@ emit_dev_subitem() {
   local sz_h; sz_h=$(format_bytes "$s")
   local esc_name; esc_name=$(json_escape_str "$name")
   local esc_path; esc_path=$(json_escape_str "$path")
-  echo "        ,{\"id\": \"$id\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"risk\": \"$risk\", \"is_orphaned\": true}"
+  echo "        ,{\"id\": \"$id\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"risk\": \"$risk\", \"is_orphaned\": false}"
 }
 
 scan_developer_subitems_json() {
@@ -1233,7 +1233,7 @@ scan_developer_subitems_json() {
   emit_dev_subitem "cocoapods_cache" "CocoaPods Cache" \
     "$HOME/Library/Caches/CocoaPods" "safe"
   emit_dev_subitem "pnpm_cache" "pnpm Store" \
-    "$HOME/Library/pnpm" "safe"
+    "$HOME/Library/pnpm/store" "safe"
   emit_dev_subitem "yarn_cache" "Yarn Cache" \
     "$HOME/Library/Caches/Yarn" "safe"
   emit_dev_subitem "gradle_cache" "Gradle Cache" \
