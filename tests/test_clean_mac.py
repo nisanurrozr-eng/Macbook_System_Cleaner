@@ -81,3 +81,22 @@ def test_hardlinks_not_double_counted(tmp_path):
     logs_size = data["scan"]["logs"]["size_bytes"]
     # Hardlink tek sayılmalı → ~5MB, 10MB değil
     assert logs_size < 8 * 1024 * 1024, logs_size
+
+
+def run_clean(home, cats: str) -> dict:
+    env = dict(os.environ, HOME=str(home))
+    out = subprocess.run(
+        ["bash", str(SCRIPT), "--clean-json", cats],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_clean_json_reports_real_and_estimated(tmp_path):
+    # logs kategorisi (id index 4) — boş HOME'da silinecek bir şey yok.
+    data = run_clean(tmp_path, "4")
+    assert "freed_bytes" in data       # gerçek (df farkı)
+    assert "estimated_bytes" in data   # du tahmini
+    assert "freed_source" in data      # "df" veya "estimated"
+    assert data["freed_bytes"] >= 0    # negatif kıstırılmış

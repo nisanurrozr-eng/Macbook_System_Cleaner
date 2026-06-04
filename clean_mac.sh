@@ -1440,6 +1440,10 @@ do_clean_json() {
   TOTAL_ITEMS=0
   CLEAN_RESULTS=()
 
+  # Gerçek kazanç ölçümü için temizlik öncesi boş alan (KB, available on /)
+  local df_before
+  df_before=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
+
   # Temizleme fonksiyon eşleşmesi
   local fn_map=(clean_user_cache clean_system_cache clean_app_leftovers \
                 clean_logs clean_temp_files clean_developer clean_trash \
@@ -1464,13 +1468,29 @@ do_clean_json() {
     fi
   done
 
-  local freed_h; freed_h=$(format_bytes "$TOTAL_FREED")
+  # Temizlik sonrası boş alan; gerçek kazanç = df farkı (bayt)
+  local df_after real_freed freed_source
+  df_after=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
+  if [ -n "$df_before" ] && [ -n "$df_after" ]; then
+    real_freed=$(( (df_after - df_before) * 1024 ))
+    [ "$real_freed" -lt 0 ] && real_freed=0   # başka süreçler veri yazmış olabilir
+    freed_source="df"
+  else
+    real_freed=$TOTAL_FREED                    # df okunamadı → tahmine düş
+    freed_source="estimated"
+  fi
+  local estimated_bytes=$TOTAL_FREED
+  local freed_h; freed_h=$(format_bytes "$real_freed")
+  local est_h; est_h=$(format_bytes "$estimated_bytes")
 
   # JSON çıktı
   echo '{'
   echo '  "success": true,'
-  echo "  \"freed_bytes\": $TOTAL_FREED,"
+  echo "  \"freed_bytes\": $real_freed,"
   echo "  \"freed_human\": \"$freed_h\","
+  echo "  \"estimated_bytes\": $estimated_bytes,"
+  echo "  \"estimated_human\": \"$est_h\","
+  echo "  \"freed_source\": \"$freed_source\","
   echo "  \"items_cleaned\": $TOTAL_ITEMS,"
   echo "  \"disk_free\": \"$(get_free_disk)\","
   echo '  "details": ['
