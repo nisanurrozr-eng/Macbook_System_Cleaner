@@ -327,7 +327,8 @@ scan_app_leftovers() {
       Audio|Fonts|Compositions|ColorSync|Spelling|Dictionaries|\
       AddressBook|Calendars|Mail|Messages|Safari|\
       CallHistoryDB|CallHistoryTransactions|CloudDocs|Dock|\
-      iCloud|Knowledge|Network|VirtualMachines|DiskImages) continue ;;
+      iCloud|Knowledge|Network|VirtualMachines|DiskImages|\
+      Google|Firefox|BraveSoftware|"Microsoft Edge"|com.operasoftware.Opera|Arc) continue ;;
     esac
     s=$(get_size_bytes "$item") 2>/dev/null || s=0
     [ -z "$s" ] && s=0

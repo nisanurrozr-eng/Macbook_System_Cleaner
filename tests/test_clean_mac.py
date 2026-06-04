@@ -53,3 +53,16 @@ def test_app_uninstaller_excluded_from_total(tmp_path):
         if cid != "app_uninstaller"
     )
     assert data["total_bytes"] == summed_in_total
+
+
+def test_app_leftovers_excludes_browser_dirs(tmp_path):
+    # Chrome profili Application Support/Google altında; app_leftovers'a
+    # sayılmamalı (browser_full sahibi).
+    make_dir_with_bytes(
+        tmp_path / "Library/Application Support/Google/Chrome", kb=4096)
+    make_dir_with_bytes(
+        tmp_path / "Library/Application Support/SomeApp", kb=1024)
+    data = run_scan(tmp_path)
+    leftovers = data["scan"]["app_leftovers"]["size_bytes"]
+    # Yalnızca SomeApp (~1MB) sayılmalı, Google (~4MB) değil
+    assert leftovers < 3 * 1024 * 1024, leftovers
