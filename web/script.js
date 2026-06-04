@@ -710,7 +710,12 @@
       el.resultsTitle.textContent = 'Temizlik tamamlandı';
       const freedText = data.freed_human || formatBytes(data.freed_bytes || 0);
       el.resultsFreed.textContent = freedText;
-      el.resultsSub.textContent = `${data.items_cleaned || selected.length} kategori · Yeni boş alan ${data.disk_free || '—'}`;
+      const subParts = [`${data.items_cleaned || selected.length} kategori`,
+                        `Yeni boş alan ${data.disk_free || '—'}`];
+      if (data.estimated_human && data.freed_source === 'df') {
+        subParts.push(`Tahmini taranan: ${data.estimated_human}`);
+      }
+      el.resultsSub.textContent = subParts.join(' · ');
       if (data.disk_free) el.sysDiskFree.textContent = data.disk_free;
 
       el.resultsChips.innerHTML = '';
