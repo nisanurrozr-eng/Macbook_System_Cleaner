@@ -211,9 +211,10 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(data)
 
     def _handle_spotlight_reindex(self):
-        data, err = self._run_script(["--spotlight-reindex"], timeout=10)
+        # Video action maps directly to native sudo execution gracefully
+        data, err = self._run_script(["--spotlight-reindex"], timeout=45)
         if err:
-            self._send_error_json(f"Spotlight hatası: {err}")
+            self._send_error_json(f"Spotlight Indexing Failure: {err}")
         else:
             self._send_json(data)
 

@@ -151,34 +151,33 @@ format_bytes() {
   else printf "%d B" "$b"; fi
 }
 
-get_size_bytes() {
-  local path="$1"
-  [ -e "$path" ] || { echo "0"; return; }
-  local result
-  result=$(du -sk "$path" 2>/dev/null | awk '{print $1 * 1024}') || result=""
-  if [ -z "$result" ]; then
-    result="0"
-  fi
-  echo "$result"
+json_escape_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\t'/\\t}"
+  echo "$s"
 }
 
 get_dir_size_bytes() {
   local path="$1"
   [ -d "$path" ] || { echo "0"; return; }
-  # Boş dizin: du'yu hiç çağırma (macOS xargs'ta -r yok).
-  local first
-  first=$(find "$path" -maxdepth 1 -mindepth 1 -print -quit 2>/dev/null)
-  [ -z "$first" ] && { echo "0"; return; }
-  # Tek du çağrısı: hardlink'ler çağrı içinde tekilleşir.
-  # NOT: ~17k+ doğrudan çocuk olan dizinlerde xargs ARG_MAX'te bölünebilir ve
-  # awk END yalnız son batch'in 'total'ını alıp eksik sayabilir. Gerçek kazanç
-  # df farkından ölçüldüğü için bu yalnızca tahmini etkiler (kabul edilebilir).
   local total
   total=$(find "$path" -maxdepth 1 -mindepth 1 -print0 2>/dev/null \
-            | xargs -0 du -sck 2>/dev/null \
-            | awk 'END {print $1 * 1024}')
+            | xargs -0 du -sk 2>/dev/null \
+            | awk '{sum += $1} END {print sum * 1024}')
   [ -z "$total" ] && total=0
   echo "$total"
+}
+
+get_size_bytes() {
+  local path="$1"
+  [ -e "$path" ] || { echo "0"; return; }
+  local result
+  result=$(du -sk "$path" 2>/dev/null | awk '{print $1 * 1024}')
+  [ -z "$result" ] && result="0"
+  echo "$result"
 }
 
 get_free_disk() {
@@ -1319,6 +1318,7 @@ scan_developer_subitems_json() {
     "$HOME/.gradle/caches" "caution"
   emit_dev_subitem "maven_repo" "Maven Repository" \
     "$HOME/.m2/repository" "caution"
+  echo "        ,{\"id\": \"simctl_unavailable\", \"name\": \"Erişilmez Simülatörleri Sil\", \"path\": \"\", \"size_bytes\": 0, \"size_human\": \"Eylem\", \"is_orphaned\": false}"
 }
 
 scan_browser_full_subitems_json() {
@@ -1482,14 +1482,19 @@ scan_app_uninstaller_subitems_json() {
 scan_mail_downloads_subitems_json() {
   local total=0
   local f sz_h esc_name s
+  local first=true
   if [ -d "$MAIL_DOWNLOADS_DIR" ]; then
     while IFS= read -r -d '' f; do
       s=$(get_size_bytes "$f") || s=0
       total=$((total + s))
       sz_h=$(format_bytes "$s")
       esc_name=$(json_escape_str "$(basename "$f")")
+      if [ "$first" = true ]; then
+        first=false
+      else
+        echo ","
+      fi
       echo -n "        {\"id\": \"$esc_name\", \"name\": \"$esc_name\", \"path\": \"\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
-      echo ","
     done < <(find "$MAIL_DOWNLOADS_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
   fi
 }
@@ -1668,11 +1673,15 @@ ENDJSON
 }
 
 do_spotlight_reindex() {
-  (sudo mdutil -i off / 2>/dev/null || true
-   sudo mdutil -E    / 2>/dev/null || true
-   sudo mdutil -i on / 2>/dev/null || true) >/dev/null 2>&1 &
-  disown
-  echo '{"success": true, "status": "started", "message": "Spotlight yeniden indeksleme arka planda başlatıldı."}'
+  if ! $SUDO_AVAILABLE && [ "$(id -u)" -ne 0 ]; then
+    echo '{"success": false, "error": "Spotlight reindexing requires sudo privileges."}'
+    exit 1
+  fi
+  # Turn indexing off, erase index store, turn indexing back on
+  sudo mdutil -i off / >/dev/null 2>&1 || true
+  sudo mdutil -E / >/dev/null 2>&1 || true
+  sudo mdutil -i on / >/dev/null 2>&1 || true
+  echo '{"success": true, "status": "started", "message": "Spotlight indexing rebuilt successfully."}'
 }
 
 # ─── Ana Akış ────────────────────────────────────────────────────────────────

@@ -822,12 +822,14 @@
   async function handleSpotlight() {
     if (el.btnSpotlight.disabled) return;
     setLoading(el.btnSpotlight, true);
-    termLog('Spotlight yeniden indeksleme tetikleniyor…', 'info');
+    termLog('Spotlight dizini sıfırlanıyor (Videodaki Siri & Spotlight Simülasyonu)…', 'info');
     try {
-      await apiFetch('/api/spotlight-reindex', { method: 'POST', body: '{}' });
-      termLog('Spotlight indeksleme arka planda başladı. Birkaç dakika sürebilir.', 'success');
+      const data = await apiFetch('/api/spotlight-reindex', { method: 'POST', body: '{}' });
+      if (data.success) {
+        termLog('✓ Spotlight dizini arka planda başarıyla sıfırlandı ve yeniden oluşturuluyor.', 'success');
+      }
     } catch (err) {
-      termLog(`Spotlight hatası: ${err.message}`, 'error');
+      termLog(`✗ Spotlight Sıfırlama Hatası: ${err.message}`, 'error');
     } finally {
       setLoading(el.btnSpotlight, false);
     }
