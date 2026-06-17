@@ -949,7 +949,7 @@ clean_app_leftovers() {
         fi
       done
     elif [ "$selection" = "all" ]; then
-      warn "UYARI: 'all' seçeneği yüklü uygulamaların (örn. Claude) ayarlarını da silecektir!"
+      warn "UYARI: 'all' seçeneği yüklü uygulamaların (örn. Chrome, VSCode) ayarlarını da silecektir!"
       if confirm "Yüklü uygulamaların ayarlarını da silmek istediğinize emin misiniz?"; then
         local j; for j in "${!as_paths[@]}"; do indices+=("$((j+1))"); done
       else

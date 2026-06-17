@@ -1,6 +1,6 @@
 # 🍎 Clean Mac
 
-> A macOS system cleanup tool — simple, safe, and effective.
+> A comprehensive macOS system cleanup tool — simple, safe, and effective.
 
 [![ShellCheck](https://img.shields.io/badge/ShellCheck-passing-brightgreen)](https://www.shellcheck.net/)
 [![macOS](https://img.shields.io/badge/macOS-Ventura%20%7C%20Sonoma%20%7C%20Sequoia-blue)](https://www.apple.com/macos/)
@@ -13,7 +13,7 @@ Clean Mac safely removes unnecessary data on macOS such as caches, logs, tempora
 ## ✨ Features
 
 - 🔍 Scans first and asks for confirmation — no surprises
-- 📊 Flexible cleanup across 7 categories
+- 📊 Flexible cleanup across **16 categories**
 - 🌐 Lightweight web dashboard (start with a single command)
 - 🛡️ Avoids touching critical system files by default
 - 🍎 Compatible with Bash 3.2+ (works on all macOS releases)
@@ -51,17 +51,28 @@ python3 web/server.py
 
 ---
 
-## 📦 Categories
+## 📦 Cleanup Categories
 
-| # | Category | Target | Notes |
-|---|----------|--------|-------|
-| 1 | 📦 User Caches | `~/Library/Caches/*` | |
+The script targets a wide array of system and user items, categorized by safety levels:
+
+| # | Category | Target / Description | Notes |
+|---|----------|----------------------|-------|
+| 1 | 📦 User Caches | `~/Library/Caches/*` | Safe |
 | 2 | 🖥️ System Caches | `/Library/Caches/*` | requires `sudo` |
-| 3 | 📂 App Leftovers | `~/Library/Application Support/`, `~/Library/Preferences/` | interactive selection |
-| 4 | 📋 Logs | `~/Library/Logs/*`, `/Library/Logs/*` | |
-| 5 | 🗃️ Temporary Files | `$TMPDIR`, user var/folders | |
-| 6 | 🛠️ Developer | Xcode DerivedData, broken symlinks | interactive selection |
-| 7 | 🗑️ Trash | `~/.Trash/*` | |
+| 3 | 📂 App Leftovers | `~/Library/Application Support/` | interactive selection |
+| 4 | 📋 Logs | `~/Library/Logs/*`, `/Library/Logs/*` | Safe |
+| 5 | 🗃️ Temporary Files | `$TMPDIR`, user var/folders | Safe |
+| 6 | 🛠️ Developer | Xcode DerivedData | interactive selection |
+| 7 | 🗑️ Trash | `~/.Trash/*` | Safe |
+| 8 | 🌐 Browser Cache | `~/Library/Caches` for Safari, Chrome, etc. | Safe |
+| 9 | ⚠️ Browser Full Data | Complete browser profiles (cookies, history) | **Danger** (requires opt-in) |
+| 10| 📱 iOS Backups | `~/Library/MobileSync/Backup` | interactive selection |
+| 11| 🗑️ App Uninstaller | Remove apps & associated leftover files | interactive selection |
+| 12| 📨 Mail Downloads | Mail attachment downloads cache | Safe |
+| 13| 🩺 Diagnostic Reports| `~/Library/Logs/DiagnosticReports` | Safe |
+| 14| 🖼️ QuickLook Cache | `qlmanage` thumbnail cache | Safe |
+| 15| 💾 Saved App State | `~/Library/Saved Application State` | Caution |
+| 16| 💽 Other Trashes | `/Volumes/*/.Trashes` | Safe |
 
 ---
 
