@@ -191,6 +191,13 @@ a { color: inherit; text-decoration: none; }
 .sys-v.loading::after { content: "…"; }
 
 .sys-chip-disk { padding-right: 6px; }
+.sys-chip-forecast {
+  background: var(--warning-soft, rgba(217, 119, 6, 0.1));
+  border-color: transparent;
+}
+.sys-chip-forecast .sys-k { color: var(--warning, #d97706); }
+.sys-chip-forecast .sys-v { color: var(--warning, #d97706); }
+.sys-chip-forecast[hidden] { display: none; }
 .sys-disk-bar {
   width: 60px; height: 5px; border-radius: 3px;
   background: var(--surface-3); overflow: hidden;
@@ -656,12 +663,29 @@ a { color: inherit; text-decoration: none; }
 .subitem-name {
   font-weight: 500;
   color: var(--text);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  display: flex; align-items: center; gap: 8px;
+  display: flex; flex-direction: column; gap: 2px;
   min-width: 0;
 }
 .subitem-name b {
   font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.subitem-desc {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3, var(--text-2));
+  line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.subitem-detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  opacity: 0.85;
+}
+.subitem-hint {
+  color: var(--warning, #d97706);
+  font-weight: 500;
 }
 
 .subitem-badge {
@@ -888,6 +912,28 @@ a { color: inherit; text-decoration: none; }
   .cat-chev { display: none; }
 }
 
+/* ═══════════════════════════════════════════════════════════
+   GSAP layer (.gsap-on is set by anim.js when GSAP is active)
+   ═══════════════════════════════════════════════════════════ */
+/* Hand these transitions to GSAP so CSS keyframes don't double up. */
+.gsap-on .subitems { animation: none; }
+.gsap-on .results  { animation: none; }
+.gsap-on .term-line { animation: none; }
+
+/* Draggable panels: smooth compositing + grab affordance on the handles. */
+.gsap-on #term,
+.gsap-on #resultsPanel { will-change: transform; }
+.gsap-on .term-head,
+.gsap-on .results-head { touch-action: none; }
+
+/* SplitText wraps each character; keep transforms crisp and unclipped. */
+.gsap-on .hero-title { will-change: transform; }
+.gsap-on .hero-title .char { will-change: transform, opacity; }
+
+/* Cards lift a touch on hover for a more tactile, polished feel. */
+.gsap-on .cat { transition: transform var(--d1) var(--ease), box-shadow var(--d1) var(--ease); }
+.gsap-on .cat:hover { transform: translateY(-1px); box-shadow: var(--shadow-md, 0 6px 20px -8px rgba(0,0,0,.18)); }
+
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
@@ -912,3 +958,267 @@ a { color: inherit; text-decoration: none; }
   white-space: nowrap;
 }
 .dryrun-toggle input { cursor: pointer; accent-color: var(--accent, #2f6df6); }
+
+/* ── Tab Navigation ─────────────────────────────────────── */
+.nav-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  z-index: 10;
+}
+
+.tab-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  border-radius: var(--r-sm);
+  transition: all var(--d1) var(--ease);
+}
+
+.tab-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.tab-btn.active {
+  background: var(--accent);
+  color: var(--text-on-acc);
+  box-shadow: 0 4px 10px var(--accent-ring);
+}
+
+.tab-btn .ic {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Search Box ─────────────────────────────────────────── */
+.search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 240px;
+}
+
+.search-box .ic {
+  position: absolute;
+  left: 10px;
+  color: var(--text-3);
+  pointer-events: none;
+  width: 14px;
+  height: 14px;
+}
+
+.search-box input {
+  width: 100%;
+  height: 32px;
+  padding: 0 12px 0 32px;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  color: var(--text);
+  outline: none;
+  transition: all var(--d1) var(--ease);
+}
+
+.search-box input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+/* ── App Uninstaller ────────────────────────────────────── */
+.uninstaller-container {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.apps-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.apps-loading, .apps-empty, .apps-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 40px 20px;
+  font-size: 14px;
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.apps-loading .spinner {
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+
+.app-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  gap: 20px;
+  background: transparent;
+  transition: background-color var(--d1) var(--ease), opacity var(--d2) var(--ease), transform var(--d2) var(--ease);
+}
+
+.app-item + .app-item {
+  border-top: 1px solid var(--hairline);
+}
+
+.app-item:hover {
+  background: var(--surface-2);
+}
+
+.app-info-col {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.app-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 16px;
+  flex-shrink: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.app-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.app-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-details-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+
+.app-version {
+  font-weight: 500;
+}
+
+.app-bundle {
+  font-family: var(--font-mono);
+  opacity: 0.8;
+}
+
+.app-action-col {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.app-size-val {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+  min-width: 80px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-src {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.src-brew {
+  color: #c2410c;
+  background: rgba(194, 65, 12, 0.1);
+}
+
+.src-cask {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.src-both {
+  color: #6f6ff7;
+  background: rgba(111, 111, 247, 0.1);
+}
+
+.src-dir {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+.btn-uninstall {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: transparent;
+}
+
+.btn-uninstall:hover {
+  background: var(--danger);
+  color: var(--text-on-acc);
+  border-color: transparent;
+}
+
+@media (max-width: 768px) {
+  .search-box {
+    width: 160px;
+  }
+  .app-details-row .app-bundle {
+    display: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .app-action-col .app-src {
+    display: none;
+  }
+  .app-size-val {
+    min-width: 60px;
+  }
+}
+

@@ -12,14 +12,18 @@ Security features:
   - Boolean normalization for scan JSON fields
 """
 
+import glob
 import hmac
 import http.server
 import json
 import os
+import plistlib
 import re
 import secrets
+import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 from pathlib import Path
 
@@ -32,6 +36,104 @@ SCRIPT_PATH = (WEB_DIR.parent / "clean_mac.sh").resolve()
 
 # Maximum allowed request body size (1 MB)
 MAX_BODY_SIZE = 1 * 1024 * 1024  # 1,048,576 bytes
+
+# ── Storage forecast ─────────────────────────────────────────────────────────
+# The Bash script is stateless, so disk-usage history lives here. We append a
+# snapshot (at most once per hour), keep 90 days, and fit a least-squares line
+# to predict when the disk will fill.
+HISTORY_FILE = os.path.expanduser("~/.cache/apple-cleanup/usage_history.json")
+MAX_HISTORY_DAYS = 90
+SNAPSHOT_INTERVAL = 3600           # seconds between recorded snapshots
+FORECAST_HORIZON_DAYS = 365        # don't report a forecast beyond a year
+
+
+def _load_history():
+    """Load usage history as a list of (timestamp, used_bytes) tuples."""
+    try:
+        with open(HISTORY_FILE) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for e in data:
+        if isinstance(e, (list, tuple)) and len(e) == 2:
+            try:
+                out.append((float(e[0]), int(e[1])))
+            except (ValueError, TypeError):
+                continue
+    out.sort(key=lambda p: p[0])
+    return out
+
+
+def _save_history(history):
+    """Persist usage history; failures are non-fatal."""
+    try:
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        tmp = HISTORY_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump([[t, u] for t, u in history], f)
+        os.replace(tmp, HISTORY_FILE)
+    except OSError:
+        pass
+
+
+def _record_snapshot(history, used_bytes, now=None):
+    """
+    Append a snapshot (throttled to once per SNAPSHOT_INTERVAL) and prune to
+    MAX_HISTORY_DAYS. Pure function — pass `now` for deterministic tests.
+    """
+    now = time.time() if now is None else now
+    if history and (now - history[-1][0]) < SNAPSHOT_INTERVAL:
+        updated = list(history)
+    else:
+        updated = list(history) + [(now, int(used_bytes))]
+    cutoff = now - MAX_HISTORY_DAYS * 86400
+    return [(t, u) for t, u in updated if t > cutoff]
+
+
+def compute_forecast(history, total_bytes, used_bytes):
+    """
+    Fit a least-squares line to (days, used_bytes) and project days until full.
+    Returns days_until_full (None when not enough data / not growing / >1yr),
+    the daily growth rate, and history coverage stats.
+    """
+    result = {
+        "days_until_full": None,
+        "daily_growth_bytes": 0,
+        "history_points": len(history),
+        "history_span_days": 0,
+    }
+    n = len(history)
+    if n < 2:
+        return result
+
+    ts0 = history[0][0]
+    xs = [(t - ts0) / 86400.0 for t, _ in history]   # days since first sample
+    ys = [float(u) for _, u in history]
+    span = xs[-1]
+    result["history_span_days"] = max(0, int(span))
+    if span < 1.0:                                    # need at least a day
+        return result
+
+    xmean = sum(xs) / n
+    ymean = sum(ys) / n
+    num = sum((x - xmean) * (y - ymean) for x, y in zip(xs, ys))
+    den = sum((x - xmean) ** 2 for x in xs)
+    if den == 0:
+        return result
+
+    rate = num / den                                  # bytes/day
+    result["daily_growth_bytes"] = int(rate)
+    if rate <= 0:                                      # stable or shrinking
+        return result
+
+    remaining = total_bytes - used_bytes
+    days_left = remaining / rate
+    if 0 < days_left <= FORECAST_HORIZON_DAYS:
+        result["days_until_full"] = max(1, int(days_left))
+    return result
 
 # Per-process CSRF/session token. Regenerated on every server start and
 # embedded into the served index.html; destructive endpoints require it.
@@ -110,6 +212,9 @@ MIME_TYPES = {
 # Regex for app leftover dir names and app names
 _APP_LEFTOVER_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')
 _APP_NAME_RE     = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$')
+# Homebrew formula/cask tokens are lowercase alphanumerics plus -, _, ., @, /
+# (the slash appears in tap-qualified names like "homebrew/cask/foo").
+_BREW_NAME_RE    = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._@/-]{0,127}$')
 
 # Developer sub-item whitelist — MUST be 100% in sync with clean_mac.sh
 # Corresponds to the case statement in clean_developer() JSON mode
@@ -129,6 +234,33 @@ _DEVELOPER_WHITELIST = frozenset({
     "gradle_cache",        # Gradle caches
     "maven_repo",          # Maven repository
     "simctl_unavailable",  # Delete unavailable simulators
+    "xcode_products",      # Xcode Products
+    "simulator_logs",      # Simulator logs
+    "simulator_devices",   # Simulator devices
+    "font_caches",         # Font caches
+    "brew_cleanup",        # Homebrew cleanup command
+    "swift_pm_cache",      # Swift package manager cache
+    "xcode_logs",          # Xcode logs
+    # Extended developer caches (safe, rebuildable)
+    "xcode_previews",      # SwiftUI preview data
+    "carthage_cache",      # Carthage dependency cache
+    "bun_cache",           # Bun package cache
+    "deno_cache",          # Deno module cache
+    "conda_pkgs",          # Conda package cache
+    "uv_cache",            # uv (Python) cache
+    "poetry_cache",        # Poetry cache
+    "go_modules",          # Go module download cache
+    "cargo_registry",      # Rust Cargo registry cache
+    "composer_cache",      # PHP Composer cache
+    "gradle_wrapper",      # Gradle wrapper distributions
+    "sbt_ivy_cache",       # SBT/Ivy cache
+    "bazel_cache",         # Bazel build/repo cache
+    "flutter_pub_cache",   # Flutter/Pub cache
+    "jetbrains_cache",     # JetBrains IDE caches
+    "playwright_cache",    # Playwright browser binaries
+    "puppeteer_cache",     # Puppeteer browser binaries
+    "prisma_cache",        # Prisma engine binaries
+    "huggingface_cache",   # HuggingFace model cache (caution: large re-download)
 })
 
 # Browser key whitelist — MUST be 100% in sync with clean_mac.sh
@@ -163,6 +295,30 @@ def _validate_browser_key(key: str) -> bool:
 def _validate_app_name(name: str) -> bool:
     """Validate an application name for uninstallation."""
     return bool(_APP_NAME_RE.match(name)) and ".." not in name and "/" not in name
+
+
+def _validate_brew_name(name: str) -> bool:
+    """Validate a Homebrew formula/cask token for uninstallation."""
+    return bool(_BREW_NAME_RE.match(name)) and ".." not in name
+
+
+# Recognized build/dependency artifact directory names. Kept in sync with
+# clean_mac.sh _PROJECT_ARTIFACT_NAMES. The shell re-validates that the parent
+# holds a project marker before deleting; this is a lightweight first gate.
+_PROJECT_ARTIFACT_NAMES = frozenset({
+    "node_modules", "target", ".build", "build",
+    "vendor", ".dart_tool", ".terraform",
+})
+
+
+def _validate_project_artifact(path: str) -> bool:
+    """Validate a project-artifact path before passing it to the script."""
+    return (
+        isinstance(path, str)
+        and path.startswith("/")
+        and ".." not in path
+        and os.path.basename(path.rstrip("/")) in _PROJECT_ARTIFACT_NAMES
+    )
 
 
 def _normalize_bool_fields(data: dict) -> dict:
@@ -320,6 +476,10 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._handle_scan()
         elif path == "/api/status":
             self._handle_status()
+        elif path == "/api/apps":
+            self._handle_apps()
+        elif path == "/api/forecast":
+            self._handle_forecast()
         else:
             self._serve_static(path)
 
@@ -341,6 +501,8 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._handle_launchagents_clean()
         elif parsed.path == "/api/thin-snapshots":
             self._handle_thin_snapshots()
+        elif parsed.path == "/api/uninstall":
+            self._handle_uninstall()
         else:
             self._send_error_json("Not found", 404)
 
@@ -358,6 +520,21 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._send_error_json(f"Status error: {err}")
         else:
             self._send_json(data)
+
+    def _handle_forecast(self):
+        try:
+            usage = shutil.disk_usage("/")
+        except OSError as e:
+            self._send_error_json(f"Disk usage error: {e}")
+            return
+        history = _record_snapshot(_load_history(), usage.used)
+        _save_history(history)
+        data = compute_forecast(history, usage.total, usage.used)
+        data["success"] = True
+        data["total_bytes"] = usage.total
+        data["used_bytes"] = usage.used
+        data["free_bytes"] = usage.free
+        self._send_json(data)
 
     def _handle_clean(self):
         payload, err = self._read_json_body()
@@ -425,6 +602,14 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             if safe:
                 args += ["--app-uninstaller-sub", ",".join(safe)]
 
+        # Project artifact sub-items (paths validated; comma-separated)
+        project_artifacts_selected = payload.get("project_artifacts_selected", [])
+        if project_artifacts_selected and isinstance(project_artifacts_selected, list):
+            safe = [x for x in project_artifacts_selected
+                    if _validate_project_artifact(x)]
+            if safe:
+                args += ["--project-artifact-sub", ",".join(safe)]
+
         data, err = self._run_script(args, env_extra=_extra_env_for_clean(payload))
         if err:
             self._send_error_json(f"Clean error: {err}")
@@ -465,6 +650,228 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._send_error_json(f"Snapshot thinning error: {err}")
         else:
             self._send_json(data)
+
+    def _run_cmd(self, cmd, timeout=60):
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            return res.returncode == 0, res.stdout, res.stderr
+        except subprocess.TimeoutExpired:
+            return False, "", "Command timed out"
+        except Exception as e:
+            return False, "", str(e)
+
+    def _handle_apps(self):
+        try:
+            # We will scan and aggregate installed applications.
+            # 1. Glob /Applications/*.app and ~/Applications/*.app
+            app_paths = glob.glob("/Applications/*.app") + glob.glob(os.path.expanduser("~/Applications/*.app"))
+            app_sizes = {}
+            if app_paths:
+                try:
+                    res = subprocess.run(["du", "-sk"] + app_paths, capture_output=True, text=True, timeout=10)
+                    if res.returncode == 0:
+                        for line in res.stdout.splitlines():
+                            parts = line.split('\t')
+                            if len(parts) == 2:
+                                app_sizes[parts[1]] = int(parts[0]) * 1024
+                except Exception:
+                    pass
+
+            # 2. Gather Homebrew casks
+            casks = []
+            if subprocess.run(["which", "brew"], capture_output=True).returncode == 0:
+                try:
+                    res = subprocess.run(["brew", "list", "--cask"], capture_output=True, text=True, timeout=10)
+                    if res.returncode == 0:
+                        casks = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+                except Exception:
+                    pass
+
+            caskroom = "/opt/homebrew/Caskroom" if os.path.exists("/opt/homebrew/Caskroom") else "/usr/local/Caskroom"
+
+            # Helper for formatting bytes
+            def format_bytes(b):
+                if b >= 1024*1024*1024:
+                    return f"{b / (1024*1024*1024):.1f} GB"
+                elif b >= 1024*1024:
+                    return f"{b / (1024*1024):.1f} MB"
+                elif b >= 1024:
+                    return f"{b / 1024:.1f} KB"
+                else:
+                    return f"{b} B"
+
+            def clean_name(n):
+                return "".join(c.lower() for c in os.path.splitext(n)[0] if c.isalnum())
+
+            def format_display_name(cask_id):
+                return " ".join(word.capitalize() for word in cask_id.replace("-", " ").replace("_", " ").split())
+
+            cask_set = set(casks)
+            cask_norm = {clean_name(c): c for c in casks}
+
+            apps_list = []
+            processed_casks = set()
+
+            # Process app paths
+            for path in app_paths:
+                basename = os.path.basename(path)
+                name = os.path.splitext(basename)[0]
+                norm = clean_name(name)
+                size = app_sizes.get(path, 0)
+
+                bundle_id = ""
+                version = ""
+                display_name = ""
+                bundle_name = ""
+                plist_path = os.path.join(path, "Contents", "Info.plist")
+                if os.path.exists(plist_path):
+                    try:
+                        with open(plist_path, 'rb') as f:
+                            plist = plistlib.load(f)
+                            bundle_id = plist.get("CFBundleIdentifier", "")
+                            version = plist.get("CFBundleShortVersionString", plist.get("CFBundleVersion", ""))
+                            display_name = plist.get("CFBundleDisplayName", "")
+                            bundle_name = plist.get("CFBundleName", "")
+                    except Exception:
+                        pass
+
+                resolved_name = display_name or bundle_name or name
+                if resolved_name.endswith('.app'):
+                    resolved_name = resolved_name[:-4]
+
+                # Special cleanups for premium visual aesthetics
+                if resolved_name == "zoom.us":
+                    resolved_name = "Zoom"
+                elif resolved_name == "Code":
+                    resolved_name = "Visual Studio Code"
+
+                source = "app_dir"
+                # Only pair an app with a cask on an exact normalized-name
+                # match. Substring matching mislabels unrelated apps as
+                # "both", which would change what /api/uninstall deletes.
+                matched_cask = cask_norm.get(norm)
+
+                if matched_cask:
+                    source = "both"
+                    processed_casks.add(matched_cask)
+
+                apps_list.append({
+                    "id": matched_cask or name,
+                    "name": resolved_name,
+                    "folder_name": name,
+                    "path": path,
+                    "size_bytes": size,
+                    "size_human": format_bytes(size),
+                    "source": source,
+                    "bundle_id": bundle_id,
+                    "version": version
+                })
+
+            # Process remaining casks
+            for cask in cask_set - processed_casks:
+                cpath = os.path.join(caskroom, cask)
+                size = 0
+                version = ""
+                if os.path.exists(cpath):
+                    try:
+                        subdirs = [d for d in os.listdir(cpath) if os.path.isdir(os.path.join(cpath, d))]
+                        if subdirs:
+                            version = subdirs[0]
+                        res = subprocess.run(["du", "-sk", cpath], capture_output=True, text=True, timeout=5)
+                        if res.returncode == 0:
+                            size = int(res.stdout.split()[0]) * 1024
+                    except Exception:
+                        pass
+                apps_list.append({
+                    "id": cask,
+                    "name": format_display_name(cask),
+                    "folder_name": "",
+                    "path": cpath,
+                    "size_bytes": size,
+                    "size_human": format_bytes(size),
+                    "source": "brew_cask",
+                    "bundle_id": "",
+                    "version": version
+                })
+
+            apps_list.sort(key=lambda x: x["name"].lower())
+            self._send_json({"success": True, "apps": apps_list})
+        except Exception as e:
+            self._send_error_json(f"Failed to list applications: {e}", 500)
+
+    def _handle_uninstall(self):
+        payload, err = self._read_json_body()
+        if err:
+            self._send_error_json(err, 400)
+            return
+
+        app_id = payload.get("id")
+        source = payload.get("source")
+        folder_name = payload.get("folder_name")
+
+        if not app_id or not isinstance(app_id, str):
+            self._send_error_json("id is required", 400)
+            return
+        if not source or source not in ("brew_cask", "brew", "app_dir", "both"):
+            self._send_error_json("Invalid source parameter", 400)
+            return
+
+        # Sanitize application name to prevent injection/traversal
+        clean_target = folder_name if (folder_name and isinstance(folder_name, str)) else app_id
+        if source in ("app_dir", "both"):
+            if not _validate_app_name(clean_target):
+                self._send_error_json("Invalid application name format", 400)
+                return
+        # Validate the Homebrew token too — it is passed to `brew uninstall`.
+        if source in ("brew", "brew_cask", "both"):
+            if not _validate_brew_name(app_id):
+                self._send_error_json("Invalid Homebrew package name format", 400)
+                return
+
+        success = True
+        msg = ""
+        details = []
+
+        # If source in ("app_dir", "both"), we run clean_mac.sh FIRST
+        # to capture the bundle ID, delete the app, and clean leftovers.
+        if source in ("app_dir", "both"):
+            # Run clean_mac.sh category 10 (app_uninstaller)
+            data, script_err = self._run_script(["--clean-json", "10", "--app-uninstaller-sub", clean_target])
+            if script_err:
+                success = False
+                msg = f"Leftovers cleanup failed: {script_err}"
+            else:
+                details.append("Application files and leftovers deleted successfully.")
+
+        # If source is ("brew_cask", "both"), run brew uninstall --cask
+        if source in ("brew_cask", "both") and success:
+            # `--` terminates option parsing so a package token can never be
+            # interpreted by brew as a flag.
+            cmd = ["brew", "uninstall", "--cask", "--", app_id]
+            ok, out, err_out = self._run_cmd(cmd)
+            if not ok:
+                success = False
+                msg = f"Homebrew cask uninstallation failed: {err_out or out}"
+            else:
+                details.append("Homebrew cask uninstalled successfully.")
+
+        elif source == "brew" and success:
+            cmd = ["brew", "uninstall", "--", app_id]
+            ok, out, err_out = self._run_cmd(cmd)
+            if not ok:
+                success = False
+                msg = f"Homebrew formula uninstallation failed: {err_out or out}"
+            else:
+                details.append("Homebrew formula uninstalled successfully.")
+
+        if success:
+            self._send_json({
+                "success": True,
+                "message": "Uninstalled successfully.",
+                "details": " ".join(details)
+            })
+        else:
+            self._send_error_json(msg or "Uninstallation failed.")
 
     # ── Static File Server ──────────────────────────────────
     def _serve_static(self, path):

@@ -51,7 +51,9 @@ class TestValidateDeveloperItem(unittest.TestCase):
     def test_new_developer_keys_allowed(self):
         for k in ["device_support", "coresim_caches", "xcode_archives",
                   "simctl_unavailable", "pnpm_cache", "yarn_cache",
-                  "cocoapods_cache", "gradle_cache", "maven_repo"]:
+                  "cocoapods_cache", "gradle_cache", "maven_repo",
+                  "xcode_products", "simulator_logs", "simulator_devices",
+                  "font_caches", "brew_cleanup", "swift_pm_cache", "xcode_logs"]:
             self.assertTrue(self.v(k), k)
 
 
@@ -90,6 +92,77 @@ class TestValidateAppName(unittest.TestCase):
 
     def test_blocks_empty(self):
         self.assertFalse(self.v(""))
+
+
+class TestValidateBrewName(unittest.TestCase):
+    def setUp(self):
+        from server import _validate_brew_name
+        self.v = _validate_brew_name
+
+    def test_allows_valid_tokens(self):
+        self.assertTrue(self.v("wget"))
+        self.assertTrue(self.v("google-chrome"))
+        self.assertTrue(self.v("python@3.12"))
+        self.assertTrue(self.v("homebrew/cask/firefox"))
+
+    def test_blocks_flag_injection(self):
+        # A leading dash would let brew parse the token as an option.
+        self.assertFalse(self.v("--force"))
+        self.assertFalse(self.v("-q"))
+
+    def test_blocks_traversal_and_injection(self):
+        self.assertFalse(self.v("../etc"))
+        self.assertFalse(self.v("pkg;rm -rf /"))
+        self.assertFalse(self.v("pkg`id`"))
+        self.assertFalse(self.v(""))
+
+
+class TestValidateProjectArtifact(unittest.TestCase):
+    def setUp(self):
+        from server import _validate_project_artifact
+        self.v = _validate_project_artifact
+
+    def test_allows_recognized_artifacts(self):
+        self.assertTrue(self.v("/Users/x/Code/app/node_modules"))
+        self.assertTrue(self.v("/Users/x/Developer/cli/target"))
+        self.assertTrue(self.v("/Users/x/Projects/pkg/.build"))
+        self.assertTrue(self.v("/Users/x/repos/svc/vendor"))
+        self.assertTrue(self.v("/Users/x/src/app/.dart_tool"))
+
+    def test_blocks_traversal(self):
+        self.assertFalse(self.v("/Users/x/../../etc/node_modules"))
+
+    def test_blocks_non_artifact_basename(self):
+        self.assertFalse(self.v("/Users/x/Documents"))
+        self.assertFalse(self.v("/etc"))
+        self.assertFalse(self.v("/Users/x/Code/app/src"))
+
+    def test_blocks_relative_and_nonstring(self):
+        self.assertFalse(self.v("node_modules"))
+        self.assertFalse(self.v(""))
+        self.assertFalse(self.v(None))
+
+
+class TestDeveloperWhitelistSync(unittest.TestCase):
+    """The shell and server developer-key whitelists must stay identical."""
+
+    def test_whitelists_match(self):
+        import re
+        from server import _DEVELOPER_WHITELIST
+
+        script = os.path.join(os.path.dirname(__file__), '..', 'clean_mac.sh')
+        with open(script, encoding='utf-8') as f:
+            text = f.read()
+
+        m = re.search(r'_VALID_DEVELOPER_KEYS="([^"]*)"', text)
+        self.assertIsNotNone(m, "_VALID_DEVELOPER_KEYS not found in clean_mac.sh")
+        shell_keys = set(m.group(1).split('|'))
+
+        self.assertEqual(
+            shell_keys, set(_DEVELOPER_WHITELIST),
+            "clean_mac.sh _VALID_DEVELOPER_KEYS and server _DEVELOPER_WHITELIST "
+            "have drifted out of sync",
+        )
 
 
 class TestAllowedHost(unittest.TestCase):
@@ -133,6 +206,77 @@ class TestAllowedOrigin(unittest.TestCase):
         self.assertFalse(self.v("http://evil.example.com"))
         self.assertFalse(self.v("https://attacker.test"))
         self.assertFalse(self.v("null"))
+
+
+class TestComputeForecast(unittest.TestCase):
+    def setUp(self):
+        from server import compute_forecast
+        self.f = compute_forecast
+
+    def test_insufficient_data(self):
+        r = self.f([], 1000, 500)
+        self.assertIsNone(r["days_until_full"])
+        self.assertEqual(r["history_points"], 0)
+        r = self.f([(0.0, 100)], 1000, 500)
+        self.assertIsNone(r["days_until_full"])
+
+    def test_steady_growth_predicts_full(self):
+        day = 86400
+        total = 1000
+        # 10 bytes/day growth, currently at 900 → 100 remaining → ~10 days
+        hist = [(i * day, 800 + i * 10) for i in range(11)]  # 10 days span
+        r = self.f(hist, total, 900)
+        self.assertEqual(r["daily_growth_bytes"], 10)
+        self.assertEqual(r["days_until_full"], 10)
+        self.assertGreaterEqual(r["history_span_days"], 10)
+
+    def test_shrinking_usage_no_forecast(self):
+        day = 86400
+        hist = [(i * day, 900 - i * 10) for i in range(11)]
+        r = self.f(hist, 1000, 800)
+        self.assertIsNone(r["days_until_full"])
+        self.assertLessEqual(r["daily_growth_bytes"], 0)
+
+    def test_span_under_one_day_no_forecast(self):
+        hist = [(0.0, 100), (3600.0, 200)]  # 1 hour apart
+        r = self.f(hist, 1000, 500)
+        self.assertIsNone(r["days_until_full"])
+
+    def test_beyond_horizon_returns_none(self):
+        day = 86400
+        # 1 byte/day growth, 10000 remaining → 10000 days > 365 → None
+        hist = [(i * day, 100 + i) for i in range(11)]
+        r = self.f(hist, 100000, 90000)
+        self.assertIsNone(r["days_until_full"])
+        self.assertEqual(r["daily_growth_bytes"], 1)
+
+
+class TestRecordSnapshot(unittest.TestCase):
+    def setUp(self):
+        from server import _record_snapshot
+        self.f = _record_snapshot
+
+    def test_appends_when_empty(self):
+        out = self.f([], 500, now=1000.0)
+        self.assertEqual(out, [(1000.0, 500)])
+
+    def test_throttles_within_interval(self):
+        hist = [(1000.0, 500)]
+        out = self.f(hist, 600, now=1000.0 + 1800)  # 30 min later
+        self.assertEqual(out, hist)  # unchanged
+
+    def test_appends_after_interval(self):
+        hist = [(1000.0, 500)]
+        out = self.f(hist, 600, now=1000.0 + 7200)  # 2 hours later
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[-1], (1000.0 + 7200, 600))
+
+    def test_prunes_old_entries(self):
+        now = 100 * 86400.0
+        hist = [(0.0, 100), (95 * 86400.0, 200)]  # first is >90 days old
+        out = self.f(hist, 300, now=now)
+        self.assertTrue(all(t > now - 90 * 86400 for t, _ in out))
+        self.assertNotIn((0.0, 100), out)
 
 
 class TestExtraEnvForClean(unittest.TestCase):

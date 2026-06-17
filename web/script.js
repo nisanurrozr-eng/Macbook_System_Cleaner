@@ -97,6 +97,11 @@
       desc: 'Harici disklerdeki çöp kutuları',
       icon: 'i-trash', color: '#8b8f99', defaultChecked: true, danger: false, tags: [],
     },
+    {
+      key: 'project_artifacts', index: 17, name: 'Proje Yapıları',
+      desc: 'Eski node_modules, target, .build, build…',
+      icon: 'i-wrench', color: '#16a34a', defaultChecked: false, danger: false, tags: [],
+    },
   ];
 
   const KEY_BY_INDEX = Object.fromEntries(CATEGORIES.map((c) => [c.index, c.key]));
@@ -113,6 +118,8 @@
     sysVersion:    $('#sysVersion'),
     sysUser:       $('#sysUser'),
     sysDiskFree:   $('#sysDiskFree'),
+    forecastChip:  $('#forecastChip'),
+    sysForecast:   $('#sysForecast'),
     diskBarFill:   $('#diskBarFill'),
     donutFill:     $('#donutFill'),
     donutNum:      $('#donutNum'),
@@ -279,6 +286,8 @@
     const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
     return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1) + ' ' + units[i];
   }
+  // Shared with the GSAP layer (anim.js) for size count-up animations.
+  window.formatBytesShared = formatBytes;
 
   // Split a human-readable size into [value, unit] for the big number
   function splitSize(human) {
@@ -378,6 +387,19 @@
       };
     }
 
+    if (url === '/api/forecast') {
+      return {
+        success: true,
+        days_until_full: 47,
+        daily_growth_bytes: 2.1 * 1024 * 1024 * 1024,
+        history_points: 36,
+        history_span_days: 18,
+        total_bytes: 500 * 1024 * 1024 * 1024,
+        used_bytes: 316 * 1024 * 1024 * 1024,
+        free_bytes: 184 * 1024 * 1024 * 1024,
+      };
+    }
+
     if (url === '/api/scan') {
       const sizes = {
         user_cache:      2.4 * 1024 * 1024 * 1024,
@@ -392,6 +414,7 @@
         ios_backups:     12.4 * 1024 * 1024 * 1024,
         app_uninstaller: 4.2 * 1024 * 1024 * 1024,
         mail_downloads:  350 * 1024 * 1024,
+        project_artifacts: 8.9 * 1024 * 1024 * 1024,
       };
       const total = Object.values(sizes).reduce((a, b) => a + b, 0);
       const scan = {};
@@ -406,9 +429,54 @@
         { id: 'AnotherApp',      name: 'Notion Calendar',   size_human: '95 MB',  is_orphaned: false },
       ];
       scan.developer.subitems = [
-        { id: 'DerivedData', name: 'Xcode DerivedData', size_human: '4.2 GB', is_orphaned: true },
-        { id: 'iOS DeviceSupport', name: 'iOS DeviceSupport', size_human: '2.1 GB', is_orphaned: true },
-        { id: 'Broken links', name: 'Bozuk semboller (12)',  size_human: '512 KB', is_orphaned: true },
+        { id: 'derived_data', name: 'Xcode DerivedData', size_human: '4.2 GB', size_bytes: 4509715660, detail: 'MyApp: 2.3 GB, ClientSDK: 1.1 GB, Playground: 480 MB +3 more', age_days: 124, is_orphaned: false },
+        { id: 'broken_links', name: 'Broken Symlinks', size_human: '12 items', is_orphaned: true },
+        { id: 'brew_cache', name: 'Homebrew Cache', size_human: '840 MB', is_orphaned: false },
+        { id: 'docker_prune', name: 'Docker Data', size_human: '2.1 GB', size_bytes: 2254857830, age_days: 72, is_orphaned: false },
+        { id: 'npm_cache', name: 'npm Cache', size_human: '120 MB', is_orphaned: false },
+        { id: 'pip_cache', name: 'pip Cache', size_human: '45 MB', is_orphaned: false },
+        { id: 'device_support', name: 'iOS DeviceSupport', size_human: '1.8 GB', is_orphaned: false },
+        { id: 'coresim_caches', name: 'CoreSimulator Caches', size_human: '320 MB', is_orphaned: false },
+        { id: 'xcode_archives', name: 'Xcode Archives', size_human: '3.4 GB', is_orphaned: false },
+        { id: 'cocoapods_cache', name: 'CocoaPods Cache', size_human: '150 MB', is_orphaned: false },
+        { id: 'pnpm_cache', name: 'pnpm Store', size_human: '280 MB', is_orphaned: false },
+        { id: 'yarn_cache', name: 'Yarn Cache', size_human: '90 MB', is_orphaned: false },
+        { id: 'gradle_cache', name: 'Gradle Cache', size_human: '650 MB', is_orphaned: false },
+        { id: 'maven_repo', name: 'Maven Repository', size_human: '420 MB', is_orphaned: false },
+        { id: 'simctl_unavailable', name: 'Delete Unavailable Simulators', size_human: 'Action', is_orphaned: false },
+        { id: 'xcode_products', name: 'Xcode Products', size_human: '1.2 GB', is_orphaned: false },
+        { id: 'simulator_logs', name: 'Simulator Logs', size_human: '12 MB', is_orphaned: false },
+        { id: 'simulator_devices', name: 'Simulator Devices', size_human: '4.8 GB', is_orphaned: false },
+        { id: 'font_caches', name: 'Font Caches', size_human: '64 MB', is_orphaned: false },
+        { id: 'brew_cleanup', name: 'Homebrew Cleanup (brew cleanup -s)', size_human: 'Action', is_orphaned: false },
+        { id: 'swift_pm_cache', name: 'Swift Package Manager Cache', size_human: '140 MB', is_orphaned: false },
+        { id: 'xcode_logs', name: 'Xcode Logs', size_human: '180 MB', is_orphaned: false },
+        { id: 'xcode_previews', name: 'Xcode Previews', size_human: '210 MB', is_orphaned: false },
+        { id: 'carthage_cache', name: 'Carthage Cache', size_human: '95 MB', is_orphaned: false },
+        { id: 'bun_cache', name: 'Bun Cache', size_human: '60 MB', is_orphaned: false },
+        { id: 'deno_cache', name: 'Deno Cache', size_human: '48 MB', is_orphaned: false },
+        { id: 'conda_pkgs', name: 'Conda Packages', size_human: '1.4 GB', is_orphaned: false },
+        { id: 'uv_cache', name: 'UV Cache', size_human: '220 MB', is_orphaned: false },
+        { id: 'poetry_cache', name: 'Poetry Cache', size_human: '180 MB', is_orphaned: false },
+        { id: 'go_modules', name: 'Go Module Cache', size_human: '780 MB', is_orphaned: false },
+        { id: 'cargo_registry', name: 'Rust Cargo Registry', size_human: '920 MB', is_orphaned: false },
+        { id: 'composer_cache', name: 'Composer Cache', size_human: '75 MB', is_orphaned: false },
+        { id: 'gradle_wrapper', name: 'Gradle Wrapper Dists', size_human: '410 MB', is_orphaned: false },
+        { id: 'sbt_ivy_cache', name: 'SBT/Ivy Cache', size_human: '530 MB', is_orphaned: false },
+        { id: 'bazel_cache', name: 'Bazel Cache', size_human: '2.3 GB', is_orphaned: false },
+        { id: 'flutter_pub_cache', name: 'Flutter/Pub Cache', size_human: '640 MB', is_orphaned: false },
+        { id: 'jetbrains_cache', name: 'JetBrains Cache', size_human: '480 MB', is_orphaned: false },
+        { id: 'playwright_cache', name: 'Playwright Browsers', size_human: '1.1 GB', is_orphaned: false },
+        { id: 'puppeteer_cache', name: 'Puppeteer Browsers', size_human: '360 MB', is_orphaned: false },
+        { id: 'prisma_cache', name: 'Prisma Engines', size_human: '140 MB', is_orphaned: false },
+        { id: 'huggingface_cache', name: 'HuggingFace Cache', size_human: '5.8 GB', is_orphaned: false }
+      ];
+      scan.project_artifacts.subitems = [
+        { id: '/Users/ahmet/Code/old-react-app/node_modules', name: 'old-react-app', type: 'Node.js', path: '/Users/ahmet/Code/old-react-app/node_modules', size_human: '1.2 GB', days_since: 142, is_orphaned: true },
+        { id: '/Users/ahmet/Developer/rust-cli/target', name: 'rust-cli', type: 'Rust', path: '/Users/ahmet/Developer/rust-cli/target', size_human: '3.4 GB', days_since: 88, is_orphaned: true },
+        { id: '/Users/ahmet/Projects/legacy-go/vendor', name: 'legacy-go', type: 'Go', path: '/Users/ahmet/Projects/legacy-go/vendor', size_human: '640 MB', days_since: 200, is_orphaned: true },
+        { id: '/Users/ahmet/Code/active-app/node_modules', name: 'active-app', type: 'Node.js', path: '/Users/ahmet/Code/active-app/node_modules', size_human: '890 MB', days_since: 3, is_orphaned: false },
+        { id: '/Users/ahmet/Developer/MyApp/.build', name: 'MyApp', type: 'Swift', path: '/Users/ahmet/Developer/MyApp/.build', size_human: '2.1 GB', days_since: 12, is_orphaned: false },
       ];
       scan.browser_full.subitems = [
         { id: 'Safari Profile', name: 'Safari profili',  size_human: '1.8 GB' },
@@ -488,6 +556,28 @@
       return { success: true, snapshots_before: 2, snapshots_after: 0, note: 'ok', disk_free: '184 GB' };
     }
 
+    if (url === '/api/apps') {
+      return {
+        success: true,
+        apps: [
+          { id: 'slack', name: 'Slack', folder_name: 'Slack', path: '/Applications/Slack.app', size_bytes: 420000000, size_human: '420.0 MB', source: 'both', bundle_id: 'com.tinyspeck.slackmacgap', version: '4.35.1' },
+          { id: 'zoom.us', name: 'Zoom', folder_name: 'zoom.us', path: '/Applications/zoom.us.app', size_bytes: 380000000, size_human: '380.0 MB', source: 'app_dir', bundle_id: 'us.zoom.xos', version: '5.16.2' },
+          { id: 'spotify', name: 'Spotify', folder_name: 'Spotify', path: '/Applications/Spotify.app', size_bytes: 280000000, size_human: '280.0 MB', source: 'both', bundle_id: 'com.spotify.client', version: '1.2.22' },
+          { id: 'discord', name: 'Discord', folder_name: 'Discord', path: '/Applications/Discord.app', size_bytes: 310000000, size_human: '310.0 MB', source: 'both', bundle_id: 'com.hnc.Discord', version: '0.0.290' },
+          { id: 'visual-studio-code', name: 'Visual Studio Code', folder_name: 'Visual Studio Code', path: '/Applications/Visual Studio Code.app', size_bytes: 850000000, size_human: '850.0 MB', source: 'both', bundle_id: 'com.microsoft.VSCode', version: '1.85.1' },
+          { id: 'lm-studio', name: 'LM Studio', folder_name: 'LM Studio', path: '/Applications/LM Studio.app', size_bytes: 1200000000, size_human: '1.2 GB', source: 'app_dir', bundle_id: 'ai.lmstudio.lmstudio', version: '0.2.16' },
+          { id: 'claude', name: 'Claude', folder_name: 'Claude', path: '/Applications/Claude.app', size_bytes: 140000000, size_human: '140.0 MB', source: 'app_dir', bundle_id: 'com.anthropic.claude', version: '0.7.0' }
+        ]
+      };
+    }
+
+    if (url === '/api/uninstall') {
+      return {
+        success: true,
+        details: 'Mock uninstallation completed successfully.'
+      };
+    }
+
     return { success: true };
   }
 
@@ -515,6 +605,28 @@
         e.textContent = '—';
         e.classList.remove('loading');
       });
+    }
+    fetchForecast();
+  }
+
+  async function fetchForecast() {
+    if (!el.forecastChip) return;
+    try {
+      const data = await apiFetch('/api/forecast');
+      if (!data || !data.success) return;
+      if (data.days_until_full != null) {
+        el.sysForecast.textContent = `~${data.days_until_full} gün içinde dolacak`;
+        el.forecastChip.hidden = false;
+        termLog(`Depolama tahmini: ~${data.days_until_full} gün içinde dolabilir.`, 'info');
+      } else if (data.history_points < 2) {
+        // Not enough history yet — keep collecting, stay quiet in the UI.
+        el.forecastChip.hidden = true;
+      } else {
+        el.sysForecast.textContent = 'Sabit — risk yok';
+        el.forecastChip.hidden = false;
+      }
+    } catch (err) {
+      /* forecast is best-effort; ignore failures */
     }
   }
 
@@ -559,7 +671,10 @@
         const card = $(`.cat[data-category="${key}"]`);
         if (!card) return;
         const sizeEl = $(`.cat-size[data-size="${key}"]`, card);
-        if (sizeEl) sizeEl.textContent = info.size_human || formatBytes(info.size_bytes || 0);
+        if (sizeEl) {
+          sizeEl.textContent = info.size_human || formatBytes(info.size_bytes || 0);
+          sizeEl.dataset.bytes = info.size_bytes || 0;
+        }
         const riskEl = $(`.cat-risk[data-risk="${key}"]`, card);
         if (riskEl) {
           const risk = info.risk;
@@ -595,6 +710,7 @@
       el.hero.setAttribute('data-state', 'scanned');
       termLog(`Tarama tamamlandı — toplam ${data.total_human || formatBytes(totalBytes)}`, 'success');
 
+      window.AppAnim?.afterScan?.();
       el.btnClean.disabled = false;
     } catch (err) {
       termLog(`Tarama hatası: ${err.message}`, 'error');
@@ -648,6 +764,71 @@
   }
 
   /* Sub-items rendering — table form below row */
+  // Human-readable descriptions for developer caches (keyed by subitem id).
+  // Explains what each cache is and how it comes back, so the user knows
+  // exactly what they are deleting. Inspired by npkill/ClearDisk.
+  const CACHE_DESCRIPTIONS = {
+    derived_data: 'Xcode derleme ürünleri ve indeksleri. Proje açılınca otomatik yeniden oluşur.',
+    broken_links: 'Hedefi silinmiş sembolik bağlantılar. Güvenle kaldırılabilir.',
+    brew_cache: 'İndirilmiş Homebrew şişe/paket dosyaları. brew install ile tekrar iner.',
+    docker_prune: 'Docker imajları, kapsayıcıları ve volume\'ları. Çalışan kapsayıcı verisi kaybolabilir!',
+    npm_cache: 'npmjs.org\'dan indirilen paket arşivleri. npm install ile tekrar iner.',
+    pip_cache: 'İndirilmiş Python wheel/sdist dosyaları. pip install ile tekrar iner.',
+    device_support: 'Bağlı iPhone/iPad hata ayıklama sembolleri. Cihaz bağlanınca tekrar iner.',
+    coresim_caches: 'CoreSimulator dyld ve framework önbellekleri. Otomatik yeniden oluşur.',
+    xcode_archives: 'App Store/dağıtım için arşivlenmiş derlemeler. Xcode\'dan tekrar arşivlenir.',
+    cocoapods_cache: 'İndirilmiş pod spec ve kaynakları. pod install ile tekrar iner.',
+    pnpm_cache: 'İçerik adresli pnpm paket deposu. pnpm install ile tekrar iner.',
+    yarn_cache: 'Önbelleğe alınmış Yarn paketleri. yarn install ile tekrar iner.',
+    gradle_cache: 'İndirilmiş JAR\'lar ve derleme çıktıları. gradle build ile tekrar iner.',
+    maven_repo: 'Yerel Maven deposu (.m2). mvn build ile tekrar iner.',
+    simctl_unavailable: 'Kullanılamayan (eski iOS) simülatörleri siler. Yer açar.',
+    xcode_products: 'Xcode ürün derleme çıktıları. Sonraki derlemede yeniden oluşur.',
+    simulator_logs: 'Simülatör çökme raporları ve günlükleri. İstediğiniz zaman silinebilir.',
+    simulator_devices: 'Simülatörleri fabrika durumuna sıfırlar (yüklü uygulama/veri). Cihaz kaydı korunur.',
+    font_caches: 'Sistem yazı tipi önbelleği. Otomatik yeniden oluşur.',
+    brew_cleanup: 'brew cleanup -s çalıştırır: eski sürümleri ve önbelleği temizler.',
+    swift_pm_cache: 'İndirilmiş Swift paketleri. swift build ile tekrar iner.',
+    xcode_logs: 'DerivedData içindeki Xcode derleme günlükleri. Güvenle silinir.',
+    xcode_previews: 'SwiftUI önizleme simülatör verisi. Sonraki önizlemede yeniden oluşur.',
+    carthage_cache: 'Carthage bağımlılık önbelleği. carthage update ile tekrar iner.',
+    bun_cache: 'Önbelleğe alınmış Bun paketleri. bun install ile tekrar iner.',
+    deno_cache: 'Önbelleğe alınmış Deno modülleri. deno run ile tekrar iner.',
+    conda_pkgs: 'Önbelleğe alınmış Conda paketleri. conda install ile tekrar iner.',
+    uv_cache: 'uv (hızlı pip) paket önbelleği. uv pip install ile tekrar iner.',
+    poetry_cache: 'Önbelleğe alınmış Poetry bağımlılıkları. poetry install ile tekrar iner.',
+    go_modules: 'Go modül indirme önbelleği. go mod download ile tekrar iner.',
+    cargo_registry: 'Önbelleğe alınmış Rust crate kaynakları. cargo build ile tekrar iner.',
+    composer_cache: 'Önbelleğe alınmış PHP paketleri. composer install ile tekrar iner.',
+    gradle_wrapper: 'Gradle wrapper dağıtım ikilileri. Sonraki gradle build ile tekrar iner.',
+    sbt_ivy_cache: 'sbt/Ivy ile önbelleğe alınmış Scala/Java bağımlılıkları. Tekrar iner.',
+    bazel_cache: 'Bazel derleme ve repo önbellekleri. Sonraki bazel build ile yeniden oluşur.',
+    flutter_pub_cache: 'Önbelleğe alınmış Dart/Flutter paketleri. flutter pub get ile tekrar iner.',
+    jetbrains_cache: 'JetBrains IDE önbellekleri (IntelliJ, WebStorm vb.). IDE yeniden başlayınca oluşur.',
+    playwright_cache: 'Playwright test tarayıcı ikilileri. npx playwright install ile tekrar iner.',
+    puppeteer_cache: 'Puppeteer için indirilen Chromium ikilileri. Tekrar iner.',
+    prisma_cache: 'Prisma ORM sorgu motoru ikilileri. npx prisma generate ile tekrar iner.',
+    huggingface_cache: 'İndirilmiş AI/ML modelleri ve veri kümeleri. Tekrar iner (büyük olabilir).',
+  };
+
+  // Age-based suggestion for a cache sub-item, based on how long since it was
+  // last touched and how big it is. Mirrors ClearDisk's heuristic, in Turkish.
+  function suggestionFor(sub) {
+    const days = sub.age_days;
+    if (days == null) return '';
+    const gb = (sub.size_bytes || 0) / (1024 * 1024 * 1024);
+    if (days > 90 && gb >= 1) {
+      return `⚠️ ${days} gündür kullanılmadı, ${sub.size_human} — güvenle temizlenebilir`;
+    }
+    if (days > 60) {
+      return `💡 ${days} gündür kullanılmıyor — temizlemeyi düşünün`;
+    }
+    if (days > 30 && gb >= 5) {
+      return `💡 ${days} gün önce, ${sub.size_human} ile büyük`;
+    }
+    return '';
+  }
+
   function renderSubitems(card, key, subitems) {
     const wrap = document.createElement('div');
     wrap.className = 'subitems';
@@ -664,6 +845,8 @@
       else if (key === 'ios_backups') checkedAttr = '';
       else if (key === 'app_uninstaller') checkedAttr = '';
       else if (key === 'mail_downloads') checkedAttr = 'checked';
+      // Project artifacts: pre-select only stale ones (untouched > 30 days)
+      else if (key === 'project_artifacts') checkedAttr = sub.is_orphaned ? 'checked' : '';
 
       let badge = '';
       if (key === 'app_leftovers') {
@@ -674,12 +857,29 @@
         badge = `<span class="subitem-badge orphaned">yedek</span>`;
       } else if (key === 'app_uninstaller') {
         badge = `<span class="subitem-badge orphaned">uygulama</span>`;
+      } else if (key === 'project_artifacts') {
+        const cls = sub.is_orphaned ? 'orphaned' : 'installed';
+        const typeLabel = sub.type || 'proje';
+        const ageLabel = sub.is_orphaned && sub.days_since != null
+          ? ` · ${sub.days_since}g` : '';
+        badge = `<span class="subitem-badge ${cls}">${escapeHtml(typeLabel)}${ageLabel}</span>`;
       }
+
+      // Secondary line: static cache description, plus a per-project breakdown
+      // (sub.detail, e.g. DerivedData "MyApp: 2.3 GB, Other: 1.1 GB") when present.
+      const desc = CACHE_DESCRIPTIONS[sub.id] || '';
+      const hint = suggestionFor(sub);
+      const descHtml = [
+        desc ? `<span class="subitem-desc">${escapeHtml(desc)}</span>` : '',
+        sub.detail ? `<span class="subitem-desc subitem-detail">${escapeHtml(sub.detail)}</span>` : '',
+        hint ? `<span class="subitem-desc subitem-hint">${escapeHtml(hint)}</span>` : '',
+      ].join('');
 
       row.innerHTML = `
         <input type="checkbox" data-sub-id="${escapeAttr(sub.id)}" ${checkedAttr}>
-        <span class="subitem-name" title="${escapeAttr(sub.name)}">
+        <span class="subitem-name" title="${escapeAttr(desc || sub.path || sub.name)}">
           <b>${escapeHtml(sub.name)}</b>
+          ${descHtml}
         </span>
         ${badge}
         <span class="subitem-size">${escapeHtml(sub.size_human || '')}</span>
@@ -759,6 +959,7 @@
         developer_selected: getSelectedSubitems('developer'),
         ios_backups_selected: getSelectedSubitems('ios_backups'),
         app_uninstaller_selected: getSelectedSubitems('app_uninstaller'),
+        project_artifacts_selected: getSelectedSubitems('project_artifacts'),
       };
       const data = await apiFetch('/api/clean', {
         method: 'POST',
@@ -767,6 +968,8 @@
 
       el.resultsPanel.hidden = false;
       el.resultsPanel.classList.remove('error');
+      window.AppAnim?.pop?.(el.resultsPanel);
+      window.AppAnim?.bindResultsDrag?.();
       el.resultsTitle.textContent = data.dry_run
         ? 'Önizleme (hiçbir şey silinmedi)'
         : 'Temizlik tamamlandı';
@@ -1011,14 +1214,22 @@
       if (e.target.closest('.switch')) return;
       const hasSubs = card.querySelector('.subitems');
       if (hasSubs) {
-        const open = card.getAttribute('data-open') === 'true';
-        card.setAttribute('data-open', String(!open));
+        const willOpen = card.getAttribute('data-open') !== 'true';
+        // GSAP accordion when available; falls back to a plain toggle.
+        if (!window.AppAnim?.expand?.(card, willOpen)) {
+          card.setAttribute('data-open', String(willOpen));
+        }
       } else {
         cb.checked = !cb.checked;
         cb.dispatchEvent(new Event('change'));
       }
     });
   });
+
+  // GSAP entrance + scroll reveals + draggable panels (no-ops without GSAP).
+  window.AppAnim?.intro?.();
+  window.AppAnim?.revealCards?.();
+  window.AppAnim?.setupDraggable?.();
 
   el.btnSelectAll.addEventListener('click', () => {
     el.cats.forEach((card) => {
@@ -1039,6 +1250,205 @@
     });
     termLog('Tüm seçimler kaldırıldı.', 'info');
   });
+
+  /* ──────────────────────────────────────────────────────────
+     App Uninstaller Tab Navigation & Handlers
+     ────────────────────────────────────────────────────────── */
+  const tabCleanup = $('#tab-cleanup');
+  const tabUninstaller = $('#tab-uninstaller');
+  const cleanupTabContent = $('#cleanupTabContent');
+  const uninstallerTabContent = $('#uninstallerTabContent');
+  const appsSearch = $('#appsSearch');
+
+  let allApplications = [];
+
+  function showTab(tabId) {
+    if (tabId === 'cleanup') {
+      tabCleanup.classList.add('active');
+      tabCleanup.setAttribute('aria-selected', 'true');
+      tabUninstaller.classList.remove('active');
+      tabUninstaller.setAttribute('aria-selected', 'false');
+      cleanupTabContent.hidden = false;
+      uninstallerTabContent.hidden = true;
+    } else {
+      tabCleanup.classList.remove('active');
+      tabCleanup.setAttribute('aria-selected', 'false');
+      tabUninstaller.classList.add('active');
+      tabUninstaller.setAttribute('aria-selected', 'true');
+      cleanupTabContent.hidden = true;
+      uninstallerTabContent.hidden = false;
+      loadApplications();
+    }
+  }
+
+  tabCleanup.addEventListener('click', () => showTab('cleanup'));
+  tabUninstaller.addEventListener('click', () => showTab('uninstaller'));
+
+  if (appsSearch) {
+    appsSearch.addEventListener('input', () => {
+      filterApplications(appsSearch.value);
+    });
+  }
+
+  async function loadApplications() {
+    const appsCount = $('#appsCount');
+    const appsList = $('#appsList');
+    if (appsCount) appsCount.textContent = 'Taranıyor...';
+    if (appsList) appsList.innerHTML = '<li class="apps-loading"><span class="spinner"></span>Uygulamalar listeleniyor...</li>';
+
+    termLog('Yüklü uygulamalar taranıyor…', 'info');
+
+    try {
+      const data = await apiFetch('/api/apps');
+      if (data && data.success) {
+        allApplications = data.apps || [];
+        renderApplications(allApplications);
+        termLog(`Uygulama taraması tamamlandı. ${allApplications.length} uygulama bulundu.`, 'success');
+      } else {
+        throw new Error(data?.error || 'Uygulamalar alınamadı.');
+      }
+    } catch (err) {
+      termLog(`Uygulama tarama hatası: ${err.message}`, 'error');
+      if (appsList) appsList.innerHTML = `<li class="apps-error">Hata: ${err.message}</li>`;
+      if (appsCount) appsCount.textContent = 'Hata';
+    }
+  }
+
+  function renderApplications(apps, skipReveal) {
+    const appsCount = $('#appsCount');
+    const appsList = $('#appsList');
+    if (appsCount) appsCount.textContent = `${apps.length} uygulama`;
+    if (!appsList) return;
+
+    if (apps.length === 0) {
+      appsList.innerHTML = '<li class="apps-empty">Uygulama bulunamadı.</li>';
+      return;
+    }
+
+    appsList.innerHTML = '';
+    apps.forEach((app) => {
+      const li = document.createElement('li');
+      li.className = 'app-item';
+      li.dataset.appId = app.id;
+      li.dataset.flipId = app.id;   // lets Flip match items across filtering
+
+      // Source badges
+      let sourceBadge = '';
+      if (app.source === 'brew') {
+        sourceBadge = '<span class="app-src src-brew">brew</span>';
+      } else if (app.source === 'brew_cask') {
+        sourceBadge = '<span class="app-src src-cask">cask</span>';
+      } else if (app.source === 'both') {
+        sourceBadge = '<span class="app-src src-both">both</span>';
+      } else {
+        sourceBadge = '<span class="app-src src-dir">app</span>';
+      }
+
+      // App icon placeholder or letter icon
+      const initial = app.name ? app.name.charAt(0).toUpperCase() : '?';
+
+      li.innerHTML = `
+        <div class="app-info-col">
+          <div class="app-icon" style="background-color: ${getColorForString(app.name)}">${initial}</div>
+          <div class="app-meta">
+            <span class="app-name">${escapeHtml(app.name)}</span>
+            <span class="app-details-row">
+              ${app.version ? `<span class="app-version">v${escapeHtml(app.version)}</span>` : ''}
+              ${app.bundle_id ? `<span class="app-bundle">${escapeHtml(app.bundle_id)}</span>` : ''}
+            </span>
+          </div>
+        </div>
+        <div class="app-action-col">
+          ${sourceBadge}
+          <span class="app-size-val">${escapeHtml(app.size_human)}</span>
+          <button class="btn btn-danger btn-sm btn-uninstall" type="button" data-id="${escapeAttr(app.id)}" data-source="${escapeAttr(app.source)}" data-name="${escapeAttr(app.name)}" data-folder-name="${escapeAttr(app.folder_name)}">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="btn-text">Kaldır</span>
+          </button>
+        </div>
+      `;
+      appsList.appendChild(li);
+    });
+
+    // Wire up uninstall buttons
+    $$('.btn-uninstall', appsList).forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        const id = btn.dataset.id;
+        const source = btn.dataset.source;
+        const name = btn.dataset.name;
+        const folderName = btn.dataset.folderName;
+        handleAppUninstall(btn, id, source, name, folderName);
+      });
+    });
+
+    if (!skipReveal) window.AppAnim?.revealList?.(appsList);
+  }
+
+  function getColorForString(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = str.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const colors = [
+      '#4d8eff', '#6f6ff7', '#a26bf7', '#0bb8c9', '#16a34a',
+      '#d97706', '#f59e0b', '#dc2626', '#ef4444', '#c2410c'
+    ];
+    return colors[Math.abs(hash) % colors.length];
+  }
+
+  function filterApplications(query) {
+    const q = query.toLowerCase().trim();
+    const next = !q ? allApplications : allApplications.filter((app) =>
+      (app.name && app.name.toLowerCase().includes(q)) ||
+      (app.bundle_id && app.bundle_id.toLowerCase().includes(q)) ||
+      (app.id && app.id.toLowerCase().includes(q))
+    );
+    // Flip: matched items glide to new positions, removed/added fade out/in.
+    const render = () => renderApplications(next, true);
+    if (window.AppAnim && window.AppAnim.flipApps) window.AppAnim.flipApps(render);
+    else renderApplications(next);
+  }
+
+  async function handleAppUninstall(btn, id, source, name, folderName) {
+    const confirmed = confirm(`"${name}" uygulamasını ve ilişkili tüm dosyalarını kaldırmak istediğinize emin misiniz?`);
+    if (!confirmed) return;
+
+    setLoading(btn, true);
+    termLog(`"${name}" kaldırılıyor…`, 'info');
+
+    try {
+      const data = await apiFetch('/api/uninstall', {
+        method: 'POST',
+        body: JSON.stringify({ id, source, folder_name: folderName }),
+      });
+
+      if (data && data.success) {
+        termLog(`✓ "${name}" başarıyla kaldırıldı.`, 'success');
+        if (data.details) {
+          termLog(`  Detaylar: ${data.details}`, 'success');
+        }
+        const li = btn.closest('.app-item');
+        if (li) {
+          li.style.opacity = '0';
+          li.style.transform = 'translateX(20px)';
+          li.style.transition = 'all 0.35s ease';
+          setTimeout(() => {
+            li.remove();
+            allApplications = allApplications.filter((a) => a.id !== id);
+            const appsCount = $('#appsCount');
+            if (appsCount) appsCount.textContent = `${allApplications.length} uygulama`;
+          }, 350);
+        }
+      } else {
+        throw new Error(data?.error || 'Kaldırma başarısız oldu.');
+      }
+    } catch (err) {
+      termLog(`✗ "${name}" kaldırılırken hata oluştu: ${err.message}`, 'error');
+      alert(`Hata: ${err.message}`);
+    } finally {
+      setLoading(btn, false);
+    }
+  }
 
   termLog('Apple Cleanup başlatıldı.', 'success');
   fetchStatus();

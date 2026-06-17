@@ -13,8 +13,12 @@ Clean Mac safely removes unnecessary data on macOS such as caches, logs, tempora
 ## ✨ Features
 
 - 🔍 Scans first and asks for confirmation — no surprises
-- 📊 Flexible cleanup across **16 categories**
-- 🌐 Lightweight web dashboard (start with a single command)
+- 📊 Flexible cleanup across **17 categories**
+- 🧑‍💻 Deep **developer cleanup** — 40+ caches: Xcode/simulators, Homebrew, npm/pnpm/yarn/bun/deno, pip/uv/poetry/conda, Go, Rust Cargo, Gradle/Maven/SBT/Bazel, CocoaPods/Carthage, Composer, Flutter, JetBrains, Playwright/Puppeteer/Prisma, HuggingFace, and more — each with a plain-language description of what it is and how it rebuilds, plus a per-project breakdown of Xcode DerivedData (e.g. *MyApp: 2.3 GB, ClientSDK: 1.1 GB*)
+- 🗑️ **App Uninstaller** — remove apps and their leftovers, with Homebrew-cask awareness, from the dashboard
+- 🧱 **Project Artifact Scanner** — finds stale `node_modules`/`target`/`.build`/`build`/`vendor`/`.dart_tool`/`.terraform` next to a project manifest in your code folders; stale (>30 days) ones are pre-selected
+- 📈 **Storage forecast** — records disk-usage history and predicts when your disk will fill (least-squares trend over the last 90 days)
+- 🌐 Lightweight web dashboard (start with a single command), animated with **GSAP** (vendored locally — no CDN/network), with reduced-motion support and full graceful fallback if scripts fail to load
 - 🛡️ Avoids touching critical system files by default
 - 🍎 Compatible with Bash 3.2+ (works on all macOS releases)
 
@@ -73,6 +77,7 @@ The script targets a wide array of system and user items, categorized by safety 
 | 14| 🖼️ QuickLook Cache | `qlmanage` thumbnail cache | Safe |
 | 15| 💾 Saved App State | `~/Library/Saved Application State` | Caution |
 | 16| 💽 Other Trashes | `/Volumes/*/.Trashes` | Safe |
+| 17| 🧱 Project Artifacts | Stale `node_modules`, `target`, `.build`, `build`, `vendor`, `.dart_tool`, `.terraform` in code folders | interactive selection |
 
 ---
 
@@ -107,6 +112,17 @@ bash clean_mac.sh --clean-json 1,4,7
 # Get system status
 bash clean_mac.sh --status-json
 ```
+
+The dashboard also exposes two HTTP endpoints used by the **App Uninstaller**
+tab (loopback + session-token protected, like every other write endpoint):
+
+- `GET /api/apps` — enumerate installed apps (`/Applications`, `~/Applications`)
+  and Homebrew casks, with sizes and bundle IDs.
+- `POST /api/uninstall` — remove an app and its leftovers and/or run
+  `brew uninstall`. App and Homebrew names are validated before use.
+- `GET /api/forecast` — records a disk-usage snapshot (max once/hour, 90-day
+  retention in `~/.cache/apple-cleanup/`) and returns a least-squares estimate
+  of days until the disk is full, plus the daily growth rate.
 
 ---
 

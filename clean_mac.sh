@@ -125,6 +125,8 @@ L() {
     en::cat_saved_app_state)  echo "Saved Application State" ;;
     tr::cat_other_trash)      echo "Diğer Ciltlerin Çöpü" ;;
     en::cat_other_trash)      echo "Other Volumes Trash" ;;
+    tr::cat_project_artifacts) echo "Proje Yapıları" ;;
+    en::cat_project_artifacts) echo "Project Artifacts" ;;
 
     # ── Cleaning Headers ─────────────────────────────────────
     tr::hdr_user_cache)       echo "🗑️  Kullanıcı Cache Temizleniyor (Tarayıcılar Hariç)" ;;
@@ -149,6 +151,8 @@ L() {
     en::hdr_ios_backups)      echo "📱 Cleaning iOS Backups" ;;
     tr::hdr_app_uninstaller)  echo "🗑️  Uygulamalar Kaldırılıyor" ;;
     en::hdr_app_uninstaller)  echo "🗑️  Uninstalling Applications" ;;
+    tr::hdr_project_artifacts) echo "🧱 Proje Yapıları Temizleniyor" ;;
+    en::hdr_project_artifacts) echo "🧱 Cleaning Project Artifacts" ;;
     tr::hdr_mail_downloads)   echo "📧 Mail İndirilenler Temizleniyor" ;;
     en::hdr_mail_downloads)   echo "📧 Cleaning Mail Downloads" ;;
     tr::hdr_diagnostic)       echo "🩺 Tanılama Raporları Temizleniyor" ;;
@@ -263,10 +267,20 @@ L() {
     en::simctl_deleted)       echo "Unavailable simulators deleted" ;;
     tr::simctl_failed)        echo "simctl çalıştırılamadı" ;;
     en::simctl_failed)        echo "simctl could not be executed" ;;
+    tr::simctl_erased)        echo "Simülatörler fabrika ayarlarına sıfırlandı" ;;
+    en::simctl_erased)        echo "Simulators reset to factory state" ;;
+    tr::brew_cleanup_success)  echo "Homebrew temizliği (brew cleanup -s) tamamlandı" ;;
+    en::brew_cleanup_success)  echo "Homebrew cleanup (brew cleanup -s) completed" ;;
+    tr::brew_cleanup_failed)   echo "Homebrew temizliği başarısız oldu" ;;
+    en::brew_cleanup_failed)   echo "Homebrew cleanup failed" ;;
 
     # ── App Uninstaller ──────────────────────────────────────
     tr::no_app_specified)     echo "Kaldırılacak uygulama belirtilmedi, atlanıyor." ;;
     en::no_app_specified)     echo "No application specified, skipping." ;;
+    tr::no_artifact_specified) echo "Temizlenecek proje yapısı belirtilmedi, atlanıyor." ;;
+    en::no_artifact_specified) echo "No project artifact specified, skipping." ;;
+    tr::invalid_artifact)     echo "Geçersiz proje yapısı yolu, atlanıyor" ;;
+    en::invalid_artifact)     echo "Invalid project artifact path, skipping" ;;
     tr::uninstaller_cli_only) echo "Tam Uygulama Kaldırıcı yalnızca web arayüzü üzerinden kullanılabilir." ;;
     en::uninstaller_cli_only) echo "Full App Uninstaller is only available via the web interface." ;;
     tr::invalid_path_traversal) echo "Geçersiz (path traversal girişimi)" ;;
@@ -361,12 +375,24 @@ BROWSER_FULL_CLEAN=""
 DEVELOPER_CLEAN=""
 IOS_BACKUPS_CLEAN=""
 APP_UNINSTALLER_CLEAN=""
+PROJECT_ARTIFACT_CLEAN=""
 
 MAIL_DOWNLOADS_DIR="$HOME/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
 
+# ─── Project artifact scanner config ─────────────────────────────────────────
+# Build/dependency directories that are safe to remove (they regenerate from a
+# project manifest). Each is identified by a marker file living alongside it.
+# Marker → artifact mapping is enforced by _is_valid_project_artifact() so the
+# web API can only ever delete a genuine artifact dir next to its project file.
+_PROJECT_ARTIFACT_NAMES="node_modules|target|.build|build|vendor|.dart_tool|.terraform"
+_PROJECT_MARKERS="package.json|Cargo.toml|Package.swift|go.mod|build.gradle|build.gradle.kts|pom.xml|composer.json|pubspec.yaml|CMakeLists.txt|main.tf"
+# Roots to scan for projects (under $HOME). Tilde-relative, expanded at runtime.
+_PROJECT_SCAN_ROOTS=("Documents" "Developer" "Projects" "Code" "repos" "src" "workspace" "Desktop")
+_PROJECT_ARTIFACT_MIN_BYTES=10485760  # only surface artifacts > 10 MB
+
 # ─── Developer sub-item whitelist (for case-validation) ──────────────────────
 # Must be kept 100% in sync with server.py _DEVELOPER_WHITELIST
-_VALID_DEVELOPER_KEYS="derived_data|broken_links|brew_cache|docker_prune|npm_cache|pip_cache|device_support|coresim_caches|xcode_archives|cocoapods_cache|pnpm_cache|yarn_cache|gradle_cache|maven_repo|simctl_unavailable"
+_VALID_DEVELOPER_KEYS="derived_data|broken_links|brew_cache|docker_prune|npm_cache|pip_cache|device_support|coresim_caches|xcode_archives|cocoapods_cache|pnpm_cache|yarn_cache|gradle_cache|maven_repo|simctl_unavailable|xcode_products|simulator_logs|simulator_devices|font_caches|brew_cleanup|swift_pm_cache|xcode_logs|xcode_previews|carthage_cache|bun_cache|deno_cache|conda_pkgs|uv_cache|poetry_cache|go_modules|cargo_registry|composer_cache|gradle_wrapper|sbt_ivy_cache|bazel_cache|flutter_pub_cache|jetbrains_cache|playwright_cache|puppeteer_cache|prisma_cache|huggingface_cache"
 
 # ─── Browser key whitelist ───────────────────────────────────────────────────
 # Must be kept 100% in sync with server.py _BROWSER_WHITELIST
@@ -422,6 +448,7 @@ CATEGORIES=(
   "quicklook_cache|cat_quicklook_cache|scan_quicklook_cache|clean_quicklook_cache|0|safe|1"
   "saved_app_state|cat_saved_app_state|scan_saved_app_state|clean_saved_app_state|0|caution|1"
   "other_trash|cat_other_trash|scan_other_trash|clean_other_trash|0|safe|1"
+  "project_artifacts|cat_project_artifacts|scan_project_artifacts|clean_project_artifacts|0|caution|0"
 )
 
 # Derive parallel arrays from registry (preserves index-based access)
@@ -502,6 +529,16 @@ json_escape_str() {
   s="${s//$'\n'/\\n}"
   s="${s//$'\t'/\\t}"
   echo "$s"
+}
+
+# Days since a path was last modified (0 if unknown / inaccessible).
+dir_age_days() {
+  local p="$1" mt now
+  [ -e "$p" ] || { echo 0; return; }
+  mt=$(stat -f %m "$p" 2>/dev/null) || { echo 0; return; }
+  [ -n "$mt" ] || { echo 0; return; }
+  now=$(date +%s)
+  echo $(( (now - mt) / 86400 ))
 }
 
 get_dir_size_bytes() {
@@ -1283,11 +1320,16 @@ clean_app_uninstaller() {
           continue
           ;;
       esac
-      local app_path="/Applications/$app_name.app"
+      local app_path=""
+      if [ -d "/Applications/$app_name.app" ]; then
+        app_path="/Applications/$app_name.app"
+      elif [ -d "$HOME/Applications/$app_name.app" ]; then
+        app_path="$HOME/Applications/$app_name.app"
+      fi
       # Resolve the real bundle id from Info.plist BEFORE deleting the .app,
       # so leftovers keyed by bundle id can still be located afterwards.
       local bundle_id=""
-      if [ -d "$app_path" ]; then
+      if [ -n "$app_path" ] && [ -d "$app_path" ]; then
         bundle_id=$(get_app_bundle_id "$app_path")
         safe_rm "$app_path" "App: $app_name"
       fi
@@ -1556,6 +1598,108 @@ clean_developer() {
               || warn "$(L simctl_failed)"
           fi
           ;;
+        xcode_products)
+          local xcode_products_dir="$HOME/Library/Developer/Xcode/Products"
+          [ -d "$xcode_products_dir" ] && safe_rm_contents "$xcode_products_dir" "Xcode Products"
+          ;;
+        simulator_logs)
+          local sim_logs_dir="$HOME/Library/Logs/CoreSimulator"
+          [ -d "$sim_logs_dir" ] && safe_rm_contents "$sim_logs_dir" "Simulator Logs"
+          ;;
+        simulator_devices)
+          # Reset simulators to factory state via simctl rather than deleting
+          # the Devices directory wholesale, which corrupts CoreSimulator and
+          # loses the device registry. `erase all` reclaims per-device data
+          # (installed apps, settings) while keeping the devices registered.
+          if command -v xcrun &>/dev/null; then
+            xcrun simctl shutdown all >/dev/null 2>&1
+            xcrun simctl erase all >/dev/null 2>&1 \
+              && success "$(L simctl_erased)" \
+              || warn "$(L simctl_failed)"
+          fi
+          ;;
+        font_caches)
+          local font_user="$HOME/Library/Caches/com.apple.FontRegistry"
+          [ -d "$font_user" ] && safe_rm_contents "$font_user" "Font Caches"
+          local d_font_clean
+          for d_font_clean in /var/folders/*/*/*/com.apple.FontRegistry /var/folders/*/*/C/com.apple.FontRegistry; do
+            [ -d "$d_font_clean" ] && safe_rm_contents "$d_font_clean" "System Font Cache"
+          done
+          ;;
+        brew_cleanup)
+          if command -v brew &>/dev/null; then
+            brew cleanup -s >/dev/null 2>&1 \
+              && success "$(L brew_cleanup_success)" \
+              || warn "$(L brew_cleanup_failed)"
+          fi
+          ;;
+        swift_pm_cache)
+          local swift_pm_dir="$HOME/Library/Caches/org.swift.swiftpm"
+          [ -d "$swift_pm_dir" ] && safe_rm_contents "$swift_pm_dir" "Swift Package Manager Cache"
+          ;;
+        xcode_logs)
+          local d_log_clean
+          for d_log_clean in "$HOME/Library/Developer/Xcode/DerivedData"/*/Logs; do
+            [ -d "$d_log_clean" ] && safe_rm_contents "$d_log_clean" "Xcode Logs"
+          done
+          ;;
+        xcode_previews)
+          safe_rm_contents "$HOME/Library/Developer/Xcode/UserData/Previews" "Xcode Previews"
+          ;;
+        carthage_cache)
+          safe_rm_contents "$HOME/Library/Caches/org.carthage.CarthageKit" "Carthage Cache"
+          ;;
+        bun_cache)
+          safe_rm_contents "$HOME/.bun/install/cache" "Bun Cache"
+          ;;
+        deno_cache)
+          safe_rm_contents "$HOME/Library/Caches/deno" "Deno Cache"
+          ;;
+        conda_pkgs)
+          safe_rm_contents "$HOME/.conda/pkgs" "Conda Packages"
+          ;;
+        uv_cache)
+          safe_rm_contents "$HOME/.cache/uv" "UV Cache"
+          ;;
+        poetry_cache)
+          safe_rm_contents "$HOME/Library/Caches/pypoetry" "Poetry Cache"
+          ;;
+        go_modules)
+          safe_rm_contents "$HOME/go/pkg/mod/cache" "Go Module Cache"
+          ;;
+        cargo_registry)
+          safe_rm_contents "$HOME/.cargo/registry" "Rust Cargo Registry"
+          ;;
+        composer_cache)
+          safe_rm_contents "$HOME/.composer/cache" "Composer Cache"
+          ;;
+        gradle_wrapper)
+          safe_rm_contents "$HOME/.gradle/wrapper/dists" "Gradle Wrapper Dists"
+          ;;
+        sbt_ivy_cache)
+          safe_rm_contents "$HOME/.ivy2/cache" "SBT/Ivy Cache"
+          ;;
+        bazel_cache)
+          safe_rm_contents "$HOME/.cache/bazel" "Bazel Cache"
+          ;;
+        flutter_pub_cache)
+          safe_rm_contents "$HOME/.pub-cache" "Flutter/Pub Cache"
+          ;;
+        jetbrains_cache)
+          safe_rm_contents "$HOME/Library/Caches/JetBrains" "JetBrains Cache"
+          ;;
+        playwright_cache)
+          safe_rm_contents "$HOME/Library/Caches/ms-playwright" "Playwright Browsers"
+          ;;
+        puppeteer_cache)
+          safe_rm_contents "$HOME/.cache/puppeteer" "Puppeteer Browsers"
+          ;;
+        prisma_cache)
+          safe_rm_contents "$HOME/.cache/prisma" "Prisma Engines"
+          ;;
+        huggingface_cache)
+          safe_rm_contents "$HOME/.cache/huggingface" "HuggingFace Cache"
+          ;;
         *)
           # Unknown key — warn and skip (never silently swallow)
           warn "$(L unknown_dev_key): '$item'"
@@ -1732,6 +1876,56 @@ scan_app_leftovers_subitems_json() {
   done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 }
 
+# Resolve DerivedData subfolders to project names (via info.plist WorkspacePath)
+# and return a "Proj: 2.3 GB, Other: 1.1 GB +N more" summary of the biggest.
+# Mirrors ClearDisk's breakdown so the user sees which projects dominate.
+derived_data_project_summary() {
+  local dd="$HOME/Library/Developer/Xcode/DerivedData"
+  [ -d "$dd" ] || return 0
+  local sub plist name ws s
+  # Collect "size<TAB>name" rows for each project folder.
+  local rows; rows=$(
+    for sub in "$dd"/*/; do
+      [ -d "$sub" ] || continue
+      name=$(basename "$sub")
+      case "$name" in
+        (ModuleCache.noindex|.*) continue ;;
+      esac
+      plist="$sub/info.plist"
+      ws=""
+      if [ -f "$plist" ]; then
+        ws=$(/usr/libexec/PlistBuddy -c "Print :WorkspacePath" "$plist" 2>/dev/null) || ws=""
+      fi
+      if [ -n "$ws" ]; then
+        name=$(basename "$ws"); name="${name%.*}"
+      else
+        # Strip the trailing "-<hash>" Xcode appends to the folder name.
+        name="${name%-*}"
+      fi
+      [ -n "$name" ] || continue
+      s=$(get_dir_size_bytes "$sub") || s=0
+      [ "$s" -ge 1048576 ] 2>/dev/null || continue   # > 1 MB
+      printf '%s\t%s\n' "$s" "$name"
+    done | sort -rn -k1,1
+  )
+  [ -n "$rows" ] || return 0
+
+  local count; count=$(printf '%s\n' "$rows" | grep -c .)
+  local summary="" shown=0 sz_b nm sz_h
+  while IFS=$'\t' read -r sz_b nm; do
+    [ -n "$sz_b" ] || continue
+    [ "$shown" -ge 5 ] && break
+    sz_h=$(format_bytes "$sz_b")
+    [ -n "$summary" ] && summary="$summary, "
+    summary="$summary$nm: $sz_h"
+    shown=$((shown + 1))
+  done <<< "$rows"
+  if [ "$count" -gt 5 ]; then
+    summary="$summary +$((count - 5)) more"
+  fi
+  printf '%s' "$summary"
+}
+
 # Emit a developer sub-item JSON line (leading comma; skip if path doesn't exist)
 emit_dev_subitem() {
   local id="$1" name="$2" path="$3" risk="$4"
@@ -1739,9 +1933,10 @@ emit_dev_subitem() {
   local s; s=$(get_size_bytes "$path") || s=0
   [ "$s" -le 0 ] 2>/dev/null && return 0
   local sz_h; sz_h=$(format_bytes "$s")
+  local age; age=$(dir_age_days "$path")
   local esc_name; esc_name=$(json_escape_str "$name")
   local esc_path; esc_path=$(json_escape_str "$path")
-  echo "        ,{\"id\": \"$id\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"risk\": \"$risk\", \"is_orphaned\": false}"
+  echo "        ,{\"id\": \"$id\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"risk\": \"$risk\", \"age_days\": $age, \"is_orphaned\": false}"
 }
 
 scan_developer_subitems_json() {
@@ -1752,7 +1947,10 @@ scan_developer_subitems_json() {
   fi
   local sz_derived; sz_derived=$(format_bytes "$s_derived")
   local esc_derived_path; esc_derived_path=$(json_escape_str "$deriveddata")
-  echo "        {\"id\": \"derived_data\", \"name\": \"Xcode DerivedData\", \"path\": \"$esc_derived_path\", \"size_bytes\": $s_derived, \"size_human\": \"$sz_derived\", \"is_orphaned\": false}"
+  local dd_detail; dd_detail=$(derived_data_project_summary)
+  local esc_dd_detail; esc_dd_detail=$(json_escape_str "$dd_detail")
+  local dd_age; dd_age=$(dir_age_days "$deriveddata")
+  echo "        {\"id\": \"derived_data\", \"name\": \"Xcode DerivedData\", \"path\": \"$esc_derived_path\", \"size_bytes\": $s_derived, \"size_human\": \"$sz_derived\", \"detail\": \"$esc_dd_detail\", \"age_days\": $dd_age, \"is_orphaned\": false}"
   
   local scan_dirs=()
   [ -d "/usr/local/bin" ]    && scan_dirs+=("/usr/local/bin")
@@ -1784,7 +1982,8 @@ scan_developer_subitems_json() {
   [ -d "$brew_cache_path" ] && s_brew=$(get_dir_size_bytes "$brew_cache_path")
   local sz_brew; sz_brew=$(format_bytes "$s_brew")
   local esc_brew_path; esc_brew_path=$(json_escape_str "$brew_cache_path")
-  echo "        ,{\"id\": \"brew_cache\", \"name\": \"Homebrew Cache\", \"path\": \"$esc_brew_path\", \"size_bytes\": $s_brew, \"size_human\": \"$sz_brew\", \"is_orphaned\": false}"
+  local brew_age; brew_age=$(dir_age_days "$brew_cache_path")
+  echo "        ,{\"id\": \"brew_cache\", \"name\": \"Homebrew Cache\", \"path\": \"$esc_brew_path\", \"size_bytes\": $s_brew, \"size_human\": \"$sz_brew\", \"age_days\": $brew_age, \"is_orphaned\": false}"
 
   # docker data
   local docker_dir="$HOME/Library/Containers/com.docker.docker/Data"
@@ -1792,7 +1991,8 @@ scan_developer_subitems_json() {
   [ -d "$docker_dir" ] && s_docker=$(get_dir_size_bytes "$docker_dir")
   local sz_docker; sz_docker=$(format_bytes "$s_docker")
   local esc_docker_path; esc_docker_path=$(json_escape_str "$docker_dir")
-  echo "        ,{\"id\": \"docker_prune\", \"name\": \"Docker Data\", \"path\": \"$esc_docker_path\", \"size_bytes\": $s_docker, \"size_human\": \"$sz_docker\", \"is_orphaned\": false}"
+  local docker_age; docker_age=$(dir_age_days "$docker_dir")
+  echo "        ,{\"id\": \"docker_prune\", \"name\": \"Docker Data\", \"path\": \"$esc_docker_path\", \"size_bytes\": $s_docker, \"size_human\": \"$sz_docker\", \"age_days\": $docker_age, \"is_orphaned\": false}"
 
   # npm cache
   local npm_cache_path="$HOME/.npm/_cacache"
@@ -1800,7 +2000,8 @@ scan_developer_subitems_json() {
   [ -d "$npm_cache_path" ] && s_npm=$(get_dir_size_bytes "$npm_cache_path")
   local sz_npm; sz_npm=$(format_bytes "$s_npm")
   local esc_npm_path; esc_npm_path=$(json_escape_str "$npm_cache_path")
-  echo "        ,{\"id\": \"npm_cache\", \"name\": \"npm Cache\", \"path\": \"$esc_npm_path\", \"size_bytes\": $s_npm, \"size_human\": \"$sz_npm\", \"is_orphaned\": false}"
+  local npm_age; npm_age=$(dir_age_days "$npm_cache_path")
+  echo "        ,{\"id\": \"npm_cache\", \"name\": \"npm Cache\", \"path\": \"$esc_npm_path\", \"size_bytes\": $s_npm, \"size_human\": \"$sz_npm\", \"age_days\": $npm_age, \"is_orphaned\": false}"
 
   # pip cache
   local pip_cache_path="$HOME/Library/Caches/pip"
@@ -1808,7 +2009,8 @@ scan_developer_subitems_json() {
   [ -d "$pip_cache_path" ] && s_pip=$(get_dir_size_bytes "$pip_cache_path")
   local sz_pip; sz_pip=$(format_bytes "$s_pip")
   local esc_pip_path; esc_pip_path=$(json_escape_str "$pip_cache_path")
-  echo "        ,{\"id\": \"pip_cache\", \"name\": \"pip Cache\", \"path\": \"$esc_pip_path\", \"size_bytes\": $s_pip, \"size_human\": \"$sz_pip\", \"is_orphaned\": false}"
+  local pip_age; pip_age=$(dir_age_days "$pip_cache_path")
+  echo "        ,{\"id\": \"pip_cache\", \"name\": \"pip Cache\", \"path\": \"$esc_pip_path\", \"size_bytes\": $s_pip, \"size_human\": \"$sz_pip\", \"age_days\": $pip_age, \"is_orphaned\": false}"
 
   emit_dev_subitem "device_support" "iOS DeviceSupport" \
     "$HOME/Library/Developer/Xcode/iOS DeviceSupport" "safe"
@@ -1827,6 +2029,98 @@ scan_developer_subitems_json() {
   emit_dev_subitem "maven_repo" "Maven Repository" \
     "$HOME/.m2/repository" "caution"
   echo "        ,{\"id\": \"simctl_unavailable\", \"name\": \"Delete Unavailable Simulators\", \"path\": \"\", \"size_bytes\": 0, \"size_human\": \"Action\", \"is_orphaned\": false}"
+
+  emit_dev_subitem "xcode_products" "Xcode Products" \
+    "$HOME/Library/Developer/Xcode/Products" "caution"
+  emit_dev_subitem "simulator_logs" "Simulator Logs" \
+    "$HOME/Library/Logs/CoreSimulator" "safe"
+  emit_dev_subitem "simulator_devices" "Simulator Devices" \
+    "$HOME/Library/Developer/CoreSimulator/Devices" "caution"
+
+  # font_caches
+  local s_font_caches=0
+  local font_paths=()
+  [ -d "$HOME/Library/Caches/com.apple.FontRegistry" ] && font_paths+=("$HOME/Library/Caches/com.apple.FontRegistry")
+  local d_font
+  for d_font in /var/folders/*/*/*/com.apple.FontRegistry /var/folders/*/*/C/com.apple.FontRegistry; do
+    [ -d "$d_font" ] && font_paths+=("$d_font")
+  done
+  local d_p
+  for d_p in "${font_paths[@]+"${font_paths[@]}"}"; do
+    local sz; sz=$(get_size_bytes "$d_p")
+    s_font_caches=$((s_font_caches + sz))
+  done
+  if [ ${#font_paths[@]} -gt 0 ] && [ "$s_font_caches" -gt 0 ]; then
+    local sz_font_caches; sz_font_caches=$(format_bytes "$s_font_caches")
+    local esc_font_path; esc_font_path=$(json_escape_str "$HOME/Library/Caches/com.apple.FontRegistry")
+    echo "        ,{\"id\": \"font_caches\", \"name\": \"Font Caches\", \"path\": \"$esc_font_path\", \"size_bytes\": $s_font_caches, \"size_human\": \"$sz_font_caches\", \"risk\": \"safe\", \"is_orphaned\": false}"
+  fi
+
+  # brew_cleanup
+  if command -v brew &>/dev/null; then
+    echo "        ,{\"id\": \"brew_cleanup\", \"name\": \"Homebrew Cleanup (brew cleanup -s)\", \"path\": \"\", \"size_bytes\": 0, \"size_human\": \"Action\", \"risk\": \"safe\", \"is_orphaned\": false}"
+  fi
+
+  # swift_pm_cache
+  emit_dev_subitem "swift_pm_cache" "Swift Package Manager Cache" \
+    "$HOME/Library/Caches/org.swift.swiftpm" "safe"
+
+  # xcode_logs
+  local s_xcode_logs=0
+  local found_logs=false
+  local d_log
+  for d_log in "$HOME/Library/Developer/Xcode/DerivedData"/*/Logs; do
+    if [ -d "$d_log" ]; then
+      local sz_log; sz_log=$(get_size_bytes "$d_log")
+      s_xcode_logs=$((s_xcode_logs + sz_log))
+      found_logs=true
+    fi
+  done
+  if [ "$found_logs" = true ] && [ "$s_xcode_logs" -gt 0 ]; then
+    local sz_xcode_logs; sz_xcode_logs=$(format_bytes "$s_xcode_logs")
+    local esc_xcode_logs_path; esc_xcode_logs_path=$(json_escape_str "$HOME/Library/Developer/Xcode/DerivedData/*/Logs")
+    echo "        ,{\"id\": \"xcode_logs\", \"name\": \"Xcode Logs\", \"path\": \"$esc_xcode_logs_path\", \"size_bytes\": $s_xcode_logs, \"size_human\": \"$sz_xcode_logs\", \"risk\": \"safe\", \"is_orphaned\": false}"
+  fi
+
+  # ── Extended developer caches (safe, rebuildable) ──
+  emit_dev_subitem "xcode_previews" "Xcode Previews" \
+    "$HOME/Library/Developer/Xcode/UserData/Previews" "safe"
+  emit_dev_subitem "carthage_cache" "Carthage Cache" \
+    "$HOME/Library/Caches/org.carthage.CarthageKit" "safe"
+  emit_dev_subitem "bun_cache" "Bun Cache" \
+    "$HOME/.bun/install/cache" "safe"
+  emit_dev_subitem "deno_cache" "Deno Cache" \
+    "$HOME/Library/Caches/deno" "safe"
+  emit_dev_subitem "conda_pkgs" "Conda Packages" \
+    "$HOME/.conda/pkgs" "safe"
+  emit_dev_subitem "uv_cache" "UV Cache" \
+    "$HOME/.cache/uv" "safe"
+  emit_dev_subitem "poetry_cache" "Poetry Cache" \
+    "$HOME/Library/Caches/pypoetry" "safe"
+  emit_dev_subitem "go_modules" "Go Module Cache" \
+    "$HOME/go/pkg/mod/cache" "safe"
+  emit_dev_subitem "cargo_registry" "Rust Cargo Registry" \
+    "$HOME/.cargo/registry" "safe"
+  emit_dev_subitem "composer_cache" "Composer Cache" \
+    "$HOME/.composer/cache" "safe"
+  emit_dev_subitem "gradle_wrapper" "Gradle Wrapper Dists" \
+    "$HOME/.gradle/wrapper/dists" "safe"
+  emit_dev_subitem "sbt_ivy_cache" "SBT/Ivy Cache" \
+    "$HOME/.ivy2/cache" "safe"
+  emit_dev_subitem "bazel_cache" "Bazel Cache" \
+    "$HOME/.cache/bazel" "safe"
+  emit_dev_subitem "flutter_pub_cache" "Flutter/Pub Cache" \
+    "$HOME/.pub-cache" "safe"
+  emit_dev_subitem "jetbrains_cache" "JetBrains Cache" \
+    "$HOME/Library/Caches/JetBrains" "safe"
+  emit_dev_subitem "playwright_cache" "Playwright Browsers" \
+    "$HOME/Library/Caches/ms-playwright" "safe"
+  emit_dev_subitem "puppeteer_cache" "Puppeteer Browsers" \
+    "$HOME/.cache/puppeteer" "safe"
+  emit_dev_subitem "prisma_cache" "Prisma Engines" \
+    "$HOME/.cache/prisma" "safe"
+  emit_dev_subitem "huggingface_cache" "HuggingFace Cache" \
+    "$HOME/.cache/huggingface" "caution"
 }
 
 scan_browser_full_subitems_json() {
@@ -1925,9 +2219,31 @@ app_leftover_paths() {
   fi
 }
 
+get_app_display_name() {
+  local app_path="$1"
+  local plist="$app_path/Contents/Info.plist"
+  [ -f "$plist" ] || { basename "$app_path" .app; return; }
+  local name
+  name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$plist" 2>/dev/null)
+  [ -z "$name" ] && name=$(/usr/libexec/PlistBuddy -c "Print :CFBundleName" "$plist" 2>/dev/null)
+  [ -z "$name" ] && name=$(basename "$app_path" .app)
+  
+  # Strip trailing .app in case plist returned it
+  name="${name%.app}"
+  
+  if [ "$name" = "zoom.us" ]; then
+    name="Zoom"
+  elif [ "$name" = "Code" ]; then
+    name="Visual Studio Code"
+  fi
+  echo "$name"
+}
+
 scan_app_uninstaller_subitems_json() {
   local first=true
-  local app app_name bundle_id leftover_total s sz_h esc_name esc_bundle
+  local app app_name bundle_id leftover_total s sz_h esc_name esc_bundle esc_id disp_name
+  local scan_dirs=("/Applications")
+  [ -d "$HOME/Applications" ] && scan_dirs+=("$HOME/Applications")
   while IFS= read -r -d '' app; do
     app_name=$(basename "$app" .app)
     bundle_id=$(get_app_bundle_id "$app")
@@ -1939,15 +2255,17 @@ scan_app_uninstaller_subitems_json() {
       leftover_total=$((leftover_total + s))
     done < <(app_leftover_paths "$app_name" "$bundle_id")
     sz_h=$(format_bytes "$leftover_total")
-    esc_name=$(json_escape_str "$app_name")
+    disp_name=$(get_app_display_name "$app")
+    esc_name=$(json_escape_str "$disp_name")
+    esc_id=$(json_escape_str "$app_name")
     esc_bundle=$(json_escape_str "$bundle_id")
     if [ "$first" = true ]; then
       first=false
     else
       echo ","
     fi
-    echo -n "        {\"id\": \"$esc_name\", \"name\": \"$esc_name\", \"bundle_id\": \"$esc_bundle\", \"size_bytes\": $leftover_total, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
-  done < <(find /Applications -maxdepth 1 -name "*.app" -print0 2>/dev/null | sort -z)
+    echo -n "        {\"id\": \"$esc_id\", \"name\": \"$esc_name\", \"bundle_id\": \"$esc_bundle\", \"size_bytes\": $leftover_total, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
+  done < <(find "${scan_dirs[@]}" -maxdepth 1 -name "*.app" -print0 2>/dev/null | sort -z)
 }
 
 scan_mail_downloads_subitems_json() {
@@ -1968,6 +2286,162 @@ scan_mail_downloads_subitems_json() {
       echo -n "        {\"id\": \"$esc_name\", \"name\": \"$esc_name\", \"path\": \"\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"is_orphaned\": false}"
     done < <(find "$MAIL_DOWNLOADS_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
   fi
+}
+
+# ─── Project Artifact Scanner ────────────────────────────────────────────────
+# Finds stale build/dependency directories (node_modules, target, .build, …)
+# sitting next to a project manifest, so they can be reclaimed and rebuilt.
+
+# Map a marker filename → "<TypeLabel> <artifact_dir_name>"
+_artifact_type_for_marker() {
+  case "$1" in
+    package.json)                  echo "Node.js node_modules" ;;
+    Cargo.toml)                    echo "Rust target" ;;
+    Package.swift)                 echo "Swift .build" ;;
+    go.mod)                        echo "Go vendor" ;;
+    build.gradle|build.gradle.kts) echo "Gradle build" ;;
+    pom.xml)                       echo "Maven target" ;;
+    composer.json)                 echo "PHP vendor" ;;
+    pubspec.yaml)                  echo "Flutter .dart_tool" ;;
+    CMakeLists.txt)                echo "CMake build" ;;
+    main.tf)                       echo "Terraform .terraform" ;;
+  esac
+}
+
+# Discover artifacts; emits "<size_bytes>\t<type_label>\t<artifact_path>" lines.
+_find_project_artifacts() {
+  local root_rel root marker parent mbase type_info label artifact_name art_path s
+  for root_rel in "${_PROJECT_SCAN_ROOTS[@]}"; do
+    root="$HOME/$root_rel"
+    [ -d "$root" ] || continue
+    while IFS= read -r marker; do
+      [ -n "$marker" ] || continue
+      mbase=$(basename "$marker")
+      type_info=$(_artifact_type_for_marker "$mbase")
+      [ -z "$type_info" ] && continue
+      label="${type_info% *}"
+      artifact_name="${type_info##* }"
+      parent=$(dirname "$marker")
+      art_path="$parent/$artifact_name"
+      [ -d "$art_path" ] || continue
+      s=$(get_dir_size_bytes "$art_path") || s=0
+      [ "$s" -ge "$_PROJECT_ARTIFACT_MIN_BYTES" ] 2>/dev/null || continue
+      printf '%s\t%s\t%s\n' "$s" "$label" "$art_path"
+    done < <(find "$root" -maxdepth 6 \
+        \( -name node_modules -o -name target -o -name .build -o -name build \
+           -o -name vendor -o -name .dart_tool -o -name .terraform -o -name .git \
+           -o -name Pods -o -name __pycache__ \) -prune -o \
+        -type f \( -name package.json -o -name Cargo.toml -o -name Package.swift \
+           -o -name go.mod -o -name build.gradle -o -name build.gradle.kts \
+           -o -name pom.xml -o -name composer.json -o -name pubspec.yaml \
+           -o -name CMakeLists.txt -o -name main.tf \) -print 2>/dev/null)
+  done
+}
+
+# Cache discovery for the lifetime of the process (scan + subitems share it).
+_PROJECT_ARTIFACTS_CACHED=""
+_PROJECT_ARTIFACTS_DONE=false
+_get_project_artifacts() {
+  if [ "$_PROJECT_ARTIFACTS_DONE" = false ]; then
+    _PROJECT_ARTIFACTS_CACHED=$(_find_project_artifacts)
+    _PROJECT_ARTIFACTS_DONE=true
+  fi
+  printf '%s\n' "$_PROJECT_ARTIFACTS_CACHED"
+}
+
+# Validate an artifact path before deletion: must be an absolute, traversal-free
+# path under $HOME whose basename is a recognized artifact dir AND whose parent
+# holds a recognized project marker. This is what makes the web API safe — only
+# genuine artifact directories adjacent to a project manifest can be removed.
+_is_valid_project_artifact() {
+  local path="$1"
+  case "$path" in
+    /*) ;; *) return 1 ;;
+  esac
+  case "$path" in
+    *..*) return 1 ;;
+  esac
+  case "$path" in
+    "$HOME"/*) ;; *) return 1 ;;
+  esac
+  local base; base=$(basename "$path")
+  case "|$_PROJECT_ARTIFACT_NAMES|" in
+    *"|$base|"*) ;; *) return 1 ;;
+  esac
+  [ -d "$path" ] || return 1
+  local parent; parent=$(dirname "$path")
+  local m
+  local IFS='|'
+  for m in $_PROJECT_MARKERS; do
+    [ -f "$parent/$m" ] && return 0
+  done
+  return 1
+}
+
+# Category scan_fn — sets this category's size from discovered artifacts.
+scan_project_artifacts() {
+  local total=0 s
+  while IFS=$'\t' read -r s _ _; do
+    [ -n "$s" ] && total=$((total + s))
+  done < <(_get_project_artifacts)
+  local i
+  for i in "${!CAT_IDS[@]}"; do
+    [ "${CAT_IDS[$i]}" = "project_artifacts" ] && { CAT_SIZES[$i]=$total; break; }
+  done
+}
+
+clean_project_artifacts() {
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_project_artifacts)"
+
+  if $JSON_MODE; then
+    if [ -z "$PROJECT_ARTIFACT_CLEAN" ]; then
+      info "$(L no_artifact_specified)"
+      return
+    fi
+    local parsed=()
+    IFS=',' read -ra parsed <<< "$PROJECT_ARTIFACT_CLEAN"
+    local p
+    for p in "${parsed[@]}"; do
+      p="${p## }"; p="${p%% }"
+      [ -z "$p" ] && continue
+      if _is_valid_project_artifact "$p"; then
+        safe_rm "$p" "Artifact: $p"
+      else
+        warn "$(L invalid_artifact): $p"
+      fi
+    done
+    return
+  fi
+
+  # Interactive CLI mode: list each artifact and confirm individually.
+  local s label path sz_h
+  while IFS=$'\t' read -r s label path; do
+    [ -n "$path" ] || continue
+    sz_h=$(format_bytes "$s")
+    if confirm "$label · $(basename "$(dirname "$path")") · $sz_h — sil?"; then
+      safe_rm "$path" "Artifact: $path"
+    fi
+  done < <(_get_project_artifacts)
+}
+
+scan_project_artifacts_subitems_json() {
+  local first=true s label path sz_h esc_id esc_label esc_name proj_name orphaned mtime now days
+  now=$(date +%s)
+  while IFS=$'\t' read -r s label path; do
+    [ -n "$path" ] || continue
+    sz_h=$(format_bytes "$s")
+    proj_name=$(basename "$(dirname "$path")")
+    orphaned=false
+    mtime=$(stat -f %m "$path" 2>/dev/null || echo "$now")
+    days=$(( (now - mtime) / 86400 ))
+    [ "$days" -gt 30 ] && orphaned=true
+    esc_id=$(json_escape_str "$path")
+    esc_label=$(json_escape_str "$label")
+    esc_name=$(json_escape_str "$proj_name")
+    if [ "$first" = true ]; then first=false; else echo ","; fi
+    echo -n "        {\"id\": \"$esc_id\", \"name\": \"$esc_name\", \"type\": \"$esc_label\", \"path\": \"$esc_id\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"days_since\": $days, \"is_orphaned\": $orphaned}"
+  done < <(_get_project_artifacts)
 }
 
 # ─── Special Action Handlers ────────────────────────────────────────────────
@@ -2101,6 +2575,11 @@ ENDJSON
     elif [ "$id" = "mail_downloads" ]; then
       echo "      ,\"subitems\": ["
       scan_mail_downloads_subitems_json
+      echo "      ]"
+    elif [ "$id" = "project_artifacts" ]; then
+      echo "      ,\"subitems\": ["
+      scan_project_artifacts_subitems_json
+      echo ""
       echo "      ]"
     fi
     
@@ -2271,6 +2750,10 @@ main() {
         i=$((i + 1))
         APP_UNINSTALLER_CLEAN="${args[$i]}"
         ;;
+      --project-artifact-sub)
+        i=$((i + 1))
+        PROJECT_ARTIFACT_CLEAN="${args[$i]}"
+        ;;
       --flush-dns)
         do_flush_dns
         exit 0
@@ -2310,6 +2793,7 @@ main() {
         echo "  --developer-sub 'd,b'    Developer sub-items (derived_data, broken_links...)"
         echo "  --ios-backups-sub 'u1,u2' iOS backup UUIDs to delete"
         echo "  --app-uninstaller-sub 'a' Apps to uninstall"
+        echo "  --project-artifact-sub 'p1,p2' Project artifact paths to delete"
         echo "  --status-json            System status as JSON"
         echo "  --thin-snapshots-json    Thin local TM snapshots, return JSON"
         echo "  --flush-dns              Flush DNS cache"
