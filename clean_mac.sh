@@ -1,15 +1,315 @@
 #!/usr/bin/env bash
-# clean_mac.sh — macOS Genel Sistem Temizleyici (Güvenli Sürüm)
-# Kullanım: bash clean_mac.sh
-#   --scan-json           Tarama sonuçlarını JSON olarak döner (web API için)
-#   --clean-json 1,3,7    Belirtilen kategorileri temizler, sonucu JSON döner
-#   --app-leftovers "dir1,dir2"  (JSON modunda) Temizlenecek uygulama kalıntı dizinleri
-#   --browser-full-sub "chrome,safari"  (JSON modunda) Sıfırlanacak tarayıcı profilleri
-#   --developer-sub "derived_data"  (JSON modunda) Temizlenecek geliştirici alt öğeleri
-#   --status-json         Sistem bilgisini JSON olarak döner
+# clean_mac.sh — macOS System Cleaner (Enterprise-Safe Edition)
+# Usage: bash clean_mac.sh
+#   --scan-json             Return scan results as JSON (web API)
+#   --clean-json 1,3,7      Clean specified categories, return JSON
+#   --app-leftovers "d1,d2" (JSON mode) App leftover dirs to clean
+#   --browser-full-sub "chrome,safari"  (JSON mode) Browser profiles to reset
+#   --developer-sub "derived_data"      (JSON mode) Developer sub-items to clean
+#   --ios-backups-sub "uuid1,uuid2"     (JSON mode) iOS backup UUIDs to delete
+#   --app-uninstaller-sub "App1,App2"   (JSON mode) Apps to uninstall
+#   --status-json           Return system info as JSON
+#   --flush-dns             Flush DNS cache
+#   --purge-ram             Purge RAM cache
+#   --launchagents-clean    Clean invalid LaunchAgents
+#   --thin-snapshots-json   Thin local TM snapshots, return JSON
+#   --spotlight-reindex     Rebuild Spotlight index
+#   --lang en|tr            Set UI language (default: tr)
 set -euo pipefail
 
-# ─── Renkler (terminale bağlı değilse devre dışı) ───────────────────────────
+# ─── Localization Engine (Bash 3.2 compatible — no assoc arrays) ─────────────
+# Default language; override via --lang <code> or APPLE_CLEANUP_LANG env var
+LANG_KEY="${APPLE_CLEANUP_LANG:-tr}"
+
+L() {
+  local key="$1"
+  case "${LANG_KEY}::${key}" in
+    # ── General UI ───────────────────────────────────────────
+    tr::version_banner)       echo "macOS Sistem Temizleyici" ;;
+    en::version_banner)       echo "macOS System Cleaner" ;;
+    tr::scanning)             echo "Taranıyor..." ;;
+    en::scanning)             echo "Scanning..." ;;
+    tr::scan_complete)        echo "Tarama tamamlandı." ;;
+    en::scan_complete)        echo "Scan complete." ;;
+    tr::scan_results)         echo "Tarama Sonuçları" ;;
+    en::scan_results)         echo "Scan Results" ;;
+    tr::category)             echo "Kategori" ;;
+    en::category)             echo "Category" ;;
+    tr::size)                 echo "Boyut" ;;
+    en::size)                 echo "Size" ;;
+    tr::estimated_total)      echo "TAHMİNİ TOPLAM" ;;
+    en::estimated_total)      echo "ESTIMATED TOTAL" ;;
+    tr::free_disk)            echo "Mevcut boş disk alanı" ;;
+    en::free_disk)            echo "Current free disk space" ;;
+    tr::cleanup_report)       echo "Temizlik Raporu" ;;
+    en::cleanup_report)       echo "Cleanup Report" ;;
+    tr::cleanup_done)         echo "Temizlik tamamlandı!" ;;
+    en::cleanup_done)         echo "Cleanup complete!" ;;
+    tr::space_freed)          echo "Kazanılan Alan:" ;;
+    en::space_freed)          echo "Space Freed:" ;;
+    tr::items_cleaned)        echo "Temizlenen Öğe:" ;;
+    en::items_cleaned)        echo "Items Cleaned:" ;;
+    tr::current_free)         echo "Mevcut Boş Alan:" ;;
+    en::current_free)         echo "Current Free Space:" ;;
+    tr::cancelled)            echo "İptal edildi." ;;
+    en::cancelled)            echo "Cancelled." ;;
+    tr::continue_prompt)      echo "Devam etmek istiyor musunuz?" ;;
+    en::continue_prompt)      echo "Do you want to continue?" ;;
+    tr::confirm_yes_no)       echo "[e/H]" ;;
+    en::confirm_yes_no)       echo "[y/N]" ;;
+    tr::deleted)              echo "silindi" ;;
+    en::deleted)              echo "deleted" ;;
+    tr::trashed)              echo "çöpe taşındı" ;;
+    en::trashed)              echo "moved to trash" ;;
+    tr::delete_failed)        echo "silinemedi" ;;
+    en::delete_failed)        echo "could not be deleted" ;;
+    tr::empty_path)           echo "Boş path, atlanıyor" ;;
+    en::empty_path)           echo "Empty path, skipping" ;;
+    tr::protected_path)       echo "Korunan sistem yolu, dokunulmadı" ;;
+    en::protected_path)       echo "Protected system path, not touched" ;;
+    tr::skipped)              echo "atlandı" ;;
+    en::skipped)              echo "skipped" ;;
+
+    # ── Sudo ─────────────────────────────────────────────────
+    tr::sudo_info)            echo "Sistem Cache ve Loglar için sudo yetkisi gerekebilir." ;;
+    en::sudo_info)            echo "Sudo privileges may be required for System Cache and Logs." ;;
+    tr::sudo_skip_info)       echo "Sudo olmadan bu kategoriler otomatik atlanır." ;;
+    en::sudo_skip_info)       echo "These categories will be automatically skipped without sudo." ;;
+    tr::sudo_prompt)          echo "Sudo yetkisi ile çalışmak ister misiniz?" ;;
+    en::sudo_prompt)          echo "Would you like to run with sudo privileges?" ;;
+    tr::sudo_granted)         echo "Sudo yetki alındı." ;;
+    en::sudo_granted)         echo "Sudo privileges granted." ;;
+    tr::sudo_failed)          echo "Sudo yetki alınamadı. Sistem kategorileri atlanacak." ;;
+    en::sudo_failed)          echo "Sudo authorization failed. System categories will be skipped." ;;
+    tr::sudo_declined)        echo "Sudo atlandı. Sadece kullanıcı seviyesi temizlik yapılacak." ;;
+    en::sudo_declined)        echo "Sudo skipped. Only user-level cleanup will be performed." ;;
+    tr::sudo_required)        echo "sudo gerekli" ;;
+    en::sudo_required)        echo "sudo required" ;;
+    tr::sudo_no_skip)         echo "Sudo yok, atlandı" ;;
+    en::sudo_no_skip)         echo "No sudo, skipped" ;;
+
+    # ── Category Names ───────────────────────────────────────
+    tr::cat_user_cache)       echo "Kullanıcı Cache" ;;
+    en::cat_user_cache)       echo "User Cache" ;;
+    tr::cat_system_cache)     echo "Sistem Cache" ;;
+    en::cat_system_cache)     echo "System Cache" ;;
+    tr::cat_app_leftovers)    echo "Uygulama Kalıntıları" ;;
+    en::cat_app_leftovers)    echo "App Leftovers" ;;
+    tr::cat_logs)             echo "Loglar" ;;
+    en::cat_logs)             echo "Logs" ;;
+    tr::cat_temp_files)       echo "Geçici Dosyalar" ;;
+    en::cat_temp_files)       echo "Temporary Files" ;;
+    tr::cat_developer)        echo "Geliştirici" ;;
+    en::cat_developer)        echo "Developer" ;;
+    tr::cat_trash)            echo "Çöp Kutusu" ;;
+    en::cat_trash)            echo "Trash" ;;
+    tr::cat_browser_cache)    echo "Tarayıcı Cache" ;;
+    en::cat_browser_cache)    echo "Browser Cache" ;;
+    tr::cat_browser_full)     echo "Tarayıcı Tüm Veri" ;;
+    en::cat_browser_full)     echo "Browser Full Data" ;;
+    tr::cat_ios_backups)      echo "iOS Yedekleri" ;;
+    en::cat_ios_backups)      echo "iOS Backups" ;;
+    tr::cat_app_uninstaller)  echo "Tam Uygulama Kaldırıcı" ;;
+    en::cat_app_uninstaller)  echo "Full App Uninstaller" ;;
+    tr::cat_mail_downloads)   echo "Mail İndirilenleri" ;;
+    en::cat_mail_downloads)   echo "Mail Downloads" ;;
+    tr::cat_diagnostic_reports) echo "Tanılama Raporları" ;;
+    en::cat_diagnostic_reports) echo "Diagnostic Reports" ;;
+    tr::cat_quicklook_cache)  echo "QuickLook Cache" ;;
+    en::cat_quicklook_cache)  echo "QuickLook Cache" ;;
+    tr::cat_saved_app_state)  echo "Kaydedilmiş Uygulama Durumu" ;;
+    en::cat_saved_app_state)  echo "Saved Application State" ;;
+    tr::cat_other_trash)      echo "Diğer Ciltlerin Çöpü" ;;
+    en::cat_other_trash)      echo "Other Volumes Trash" ;;
+
+    # ── Cleaning Headers ─────────────────────────────────────
+    tr::hdr_user_cache)       echo "🗑️  Kullanıcı Cache Temizleniyor (Tarayıcılar Hariç)" ;;
+    en::hdr_user_cache)       echo "🗑️  Cleaning User Cache (Excluding Browsers)" ;;
+    tr::hdr_system_cache)     echo "🗑️  Sistem Cache Temizleniyor" ;;
+    en::hdr_system_cache)     echo "🗑️  Cleaning System Cache" ;;
+    tr::hdr_app_leftovers)    echo "📂 Uygulama Kalıntıları Temizleniyor" ;;
+    en::hdr_app_leftovers)    echo "📂 Cleaning App Leftovers" ;;
+    tr::hdr_logs)             echo "🗑️  Loglar Temizleniyor" ;;
+    en::hdr_logs)             echo "🗑️  Cleaning Logs" ;;
+    tr::hdr_temp)             echo "🗑️  Geçici Dosyalar Temizleniyor" ;;
+    en::hdr_temp)             echo "🗑️  Cleaning Temporary Files" ;;
+    tr::hdr_developer)        echo "🛠  Geliştirici Verileri Temizleniyor" ;;
+    en::hdr_developer)        echo "🛠  Cleaning Developer Data" ;;
+    tr::hdr_trash)            echo "🗑️  Çöp Kutusu Temizleniyor" ;;
+    en::hdr_trash)            echo "🗑️  Emptying Trash" ;;
+    tr::hdr_browser_cache)    echo "🌐 Tarayıcı Cache Temizleniyor (Çerezler Korunur)" ;;
+    en::hdr_browser_cache)    echo "🌐 Cleaning Browser Cache (Cookies Preserved)" ;;
+    tr::hdr_browser_full)     echo "⚠️  Tarayıcı Tüm Veriler Temizleniyor" ;;
+    en::hdr_browser_full)     echo "⚠️  Cleaning All Browser Data" ;;
+    tr::hdr_ios_backups)      echo "📱 iOS Yedekleri Temizleniyor" ;;
+    en::hdr_ios_backups)      echo "📱 Cleaning iOS Backups" ;;
+    tr::hdr_app_uninstaller)  echo "🗑️  Uygulamalar Kaldırılıyor" ;;
+    en::hdr_app_uninstaller)  echo "🗑️  Uninstalling Applications" ;;
+    tr::hdr_mail_downloads)   echo "📧 Mail İndirilenler Temizleniyor" ;;
+    en::hdr_mail_downloads)   echo "📧 Cleaning Mail Downloads" ;;
+    tr::hdr_diagnostic)       echo "🩺 Tanılama Raporları Temizleniyor" ;;
+    en::hdr_diagnostic)       echo "🩺 Cleaning Diagnostic Reports" ;;
+    tr::hdr_quicklook)        echo "🖼️  QuickLook Cache Temizleniyor" ;;
+    en::hdr_quicklook)        echo "🖼️  Cleaning QuickLook Cache" ;;
+    tr::hdr_saved_state)      echo "💾 Kaydedilmiş Uygulama Durumu Temizleniyor" ;;
+    en::hdr_saved_state)      echo "💾 Cleaning Saved Application State" ;;
+    tr::hdr_other_trash)      echo "🗑️  Diğer Ciltlerin Çöpü Temizleniyor" ;;
+    en::hdr_other_trash)      echo "🗑️  Cleaning Other Volumes Trash" ;;
+
+    # ── Interactive Prompts ──────────────────────────────────
+    tr::select_categories)    echo "Temizlenecek kategorileri seçin:" ;;
+    en::select_categories)    echo "Select categories to clean:" ;;
+    tr::enter_numbers)        echo "Numara girin (boşlukla, örn. 1 4 7 8) veya" ;;
+    en::enter_numbers)        echo "Enter numbers (space-separated, e.g. 1 4 7 8) or" ;;
+    tr::safe_only)            echo "sadece güvenli olanlar" ;;
+    en::safe_only)            echo "safe ones only" ;;
+    tr::what_to_do)           echo "Ne yapmak istersiniz?" ;;
+    en::what_to_do)           echo "What would you like to do?" ;;
+    tr::quick_clean)          echo "Sadece Kesinlikle Güvenli Dosyaları Hızlı Temizle (Önbellek, Log, Temp, Sepet vb.)" ;;
+    en::quick_clean)          echo "Quick Clean Safe Files Only (Cache, Log, Temp, Trash etc.)" ;;
+    tr::selective_clean)      echo "Kategori Seçerek Temizle (Uygulama Ayarları / Tarayıcı Oturumları Seçmeli)" ;;
+    en::selective_clean)      echo "Selective Clean (Choose App Settings / Browser Sessions)" ;;
+    tr::cancel)               echo "İptal" ;;
+    en::cancel)               echo "Cancel" ;;
+    tr::your_choice)          echo "Seçiminiz" ;;
+    en::your_choice)          echo "Your choice" ;;
+    tr::no_selection)         echo "Seçim yapılmadı. İptal edildi." ;;
+    en::no_selection)         echo "No selection made. Cancelled." ;;
+    tr::safe_clean_info)      echo "Kesinlikle güvenli kategoriler (Önbellek, Log, Temp, Çöp Kutusu, Tarayıcı Caches) temizlenecek." ;;
+    en::safe_clean_info)      echo "Absolutely safe categories (Cache, Log, Temp, Trash, Browser Caches) will be cleaned." ;;
+    tr::selected_clean_q)     echo "Seçilen kategoriler temizlensin mi?" ;;
+    en::selected_clean_q)     echo "Clean selected categories?" ;;
+
+    # ── Browser Full ─────────────────────────────────────────
+    tr::browser_warn)         echo "DİKKAT: Tarayıcı tüm verilerini silmek ilgili tarayıcıdaki tüm oturumları kapatır ve verileri sıfırlar!" ;;
+    en::browser_warn)         echo "WARNING: Deleting all browser data will close all sessions and reset data!" ;;
+    tr::no_browser_data)      echo "Temizlenecek tarayıcı verisi bulunamadı." ;;
+    en::no_browser_data)      echo "No browser data found to clean." ;;
+    tr::browser_select)       echo "Sıfırlamak istediğiniz tarayıcı numaralarını girin (boşlukla) veya" ;;
+    en::browser_select)       echo "Enter browser numbers to reset (space-separated) or" ;;
+    tr::browser_skipped)      echo "Tarayıcı temizliği atlandı." ;;
+    en::browser_skipped)      echo "Browser cleanup skipped." ;;
+    tr::profile_deleted)      echo "Profili" ;;
+    en::profile_deleted)      echo "Profile" ;;
+    tr::are_you_sure)         echo "Emin misiniz?" ;;
+    en::are_you_sure)         echo "Are you sure?" ;;
+    tr::profile_warn)         echo "profil verileri tamamen silinecek!" ;;
+    en::profile_warn)         echo "profile data will be permanently deleted!" ;;
+    tr::no_browser_specified) echo "Temizlenecek tarayıcı belirtilmedi, atlanıyor." ;;
+    en::no_browser_specified) echo "No browser specified, skipping." ;;
+
+    # ── iOS Backups ──────────────────────────────────────────
+    tr::no_ios_backups)       echo "iOS yedekleri bulunamadı." ;;
+    en::no_ios_backups)       echo "No iOS backups found." ;;
+    tr::no_ios_clean)         echo "Temizlenecek iOS yedeği bulunamadı." ;;
+    en::no_ios_clean)         echo "No iOS backups found to clean." ;;
+    tr::ios_skipped)          echo "iOS yedekleri atlandı." ;;
+    en::ios_skipped)          echo "iOS backups skipped." ;;
+    tr::ios_select)           echo "Numara girin (boşlukla)," ;;
+    en::ios_select)           echo "Enter numbers (space-separated)," ;;
+    tr::no_backup_specified)  echo "Temizlenecek yedek belirtilmedi, atlanıyor." ;;
+    en::no_backup_specified)  echo "No backup specified, skipping." ;;
+
+    # ── App Leftovers ────────────────────────────────────────
+    tr::app_support_header)   echo "~/Library/Application Support/ klasörleri (Analiz Edildi):" ;;
+    en::app_support_header)   echo "~/Library/Application Support/ folders (Analyzed):" ;;
+    tr::orphan_suggested)     echo "Kalıntı - Önerilen" ;;
+    en::orphan_suggested)     echo "Orphan - Recommended" ;;
+    tr::installed_protected)  echo "Yüklü - Korunuyor" ;;
+    en::installed_protected)  echo "Installed - Protected" ;;
+    tr::leftovers_select)     echo "Numara girin (boşlukla)," ;;
+    en::leftovers_select)     echo "Enter numbers (space-separated)," ;;
+    tr::orphans_only)         echo "sadece kalıntılar" ;;
+    en::orphans_only)         echo "orphans only" ;;
+    tr::skip)                 echo "atla" ;;
+    en::skip)                 echo "skip" ;;
+    tr::all_warn)             echo "UYARI: 'all' seçeneği yüklü uygulamaların (örn. Chrome, VSCode) ayarlarını da silecektir!" ;;
+    en::all_warn)             echo "WARNING: 'all' option will also delete settings for installed apps (e.g. Chrome, VSCode)!" ;;
+    tr::all_confirm)          echo "Yüklü uygulamaların ayarlarını da silmek istediğinize emin misiniz?" ;;
+    en::all_confirm)          echo "Are you sure you want to delete settings for installed apps too?" ;;
+    tr::orphans_selected)     echo "Sadece kalıntılar seçildi." ;;
+    en::orphans_selected)     echo "Only orphans selected." ;;
+    tr::app_support_skipped)  echo "Application Support atlandı." ;;
+    en::app_support_skipped)  echo "Application Support skipped." ;;
+    tr::no_subdir_specified)  echo "Temizlenecek alt dizin belirtilmedi, atlanıyor." ;;
+    en::no_subdir_specified)  echo "No subdirectory specified, skipping." ;;
+
+    # ── Developer ────────────────────────────────────────────
+    tr::no_dev_specified)     echo "Temizlenecek geliştirici alt kategorisi belirtilmedi, atlanıyor." ;;
+    en::no_dev_specified)     echo "No developer sub-category specified, skipping." ;;
+    tr::xcode_dd_prompt)      echo "Xcode DerivedData temizlensin mi?" ;;
+    en::xcode_dd_prompt)      echo "Clean Xcode DerivedData?" ;;
+    tr::xcode_dd_missing)     echo "Xcode DerivedData bulunamadı." ;;
+    en::xcode_dd_missing)     echo "Xcode DerivedData not found." ;;
+    tr::scanning_broken_links) echo "Kırık sembolik linkler taranıyor..." ;;
+    en::scanning_broken_links) echo "Scanning for broken symlinks..." ;;
+    tr::no_broken_links)      echo "Kırık sembolik link bulunamadı." ;;
+    en::no_broken_links)      echo "No broken symlinks found." ;;
+    tr::broken_links_count)   echo "Kırık sembolik linkler" ;;
+    en::broken_links_count)   echo "Broken symlinks" ;;
+    tr::delete_broken_q)      echo "Tüm kırık sembolik linkler silinsin mi?" ;;
+    en::delete_broken_q)      echo "Delete all broken symlinks?" ;;
+    tr::docker_cleaned)       echo "Docker verileri temizlendi." ;;
+    en::docker_cleaned)       echo "Docker data cleaned." ;;
+    tr::docker_missing)       echo "Docker bulunamadı, atlanıyor." ;;
+    en::docker_missing)       echo "Docker not found, skipping." ;;
+    tr::unknown_dev_key)      echo "Bilinmeyen geliştirici anahtarı, atlanıyor" ;;
+    en::unknown_dev_key)      echo "Unknown developer key, skipping" ;;
+    tr::simctl_deleted)       echo "Erişilmez simülatörler silindi" ;;
+    en::simctl_deleted)       echo "Unavailable simulators deleted" ;;
+    tr::simctl_failed)        echo "simctl çalıştırılamadı" ;;
+    en::simctl_failed)        echo "simctl could not be executed" ;;
+
+    # ── App Uninstaller ──────────────────────────────────────
+    tr::no_app_specified)     echo "Kaldırılacak uygulama belirtilmedi, atlanıyor." ;;
+    en::no_app_specified)     echo "No application specified, skipping." ;;
+    tr::uninstaller_cli_only) echo "Tam Uygulama Kaldırıcı yalnızca web arayüzü üzerinden kullanılabilir." ;;
+    en::uninstaller_cli_only) echo "Full App Uninstaller is only available via the web interface." ;;
+    tr::invalid_path_traversal) echo "Geçersiz (path traversal girişimi)" ;;
+    en::invalid_path_traversal) echo "Invalid (path traversal attempt)" ;;
+
+    # ── Mail Downloads ───────────────────────────────────────
+    tr::mail_dir_missing)     echo "Mail İndirilenler klasörü bulunamadı." ;;
+    en::mail_dir_missing)     echo "Mail Downloads folder not found." ;;
+
+    # ── QuickLook ────────────────────────────────────────────
+    tr::ql_reset)             echo "QuickLook thumbnail cache sıfırlandı" ;;
+    en::ql_reset)             echo "QuickLook thumbnail cache reset" ;;
+    tr::ql_failed)            echo "qlmanage çalıştırılamadı" ;;
+    en::ql_failed)            echo "qlmanage could not be executed" ;;
+    tr::ql_missing)           echo "qlmanage bulunamadı" ;;
+    en::ql_missing)           echo "qlmanage not found" ;;
+
+    # ── Misc ─────────────────────────────────────────────────
+    tr::dns_flushed)          echo "DNS önbelleği temizlendi." ;;
+    en::dns_flushed)          echo "DNS cache flushed." ;;
+    tr::dns_failed)           echo "DNS temizleme başarısız." ;;
+    en::dns_failed)           echo "DNS flush failed." ;;
+    tr::ram_purged)           echo "RAM önbelleği temizlendi." ;;
+    en::ram_purged)           echo "RAM cache purged." ;;
+    tr::ram_failed)           echo "RAM temizleme başarısız (sudo gerekebilir)." ;;
+    en::ram_failed)           echo "RAM purge failed (sudo may be required)." ;;
+    tr::scan_first)           echo "Bu betik ÖNCE tarar, silmeden önce onayınızı ister." ;;
+    en::scan_first)           echo "This script scans FIRST, then asks for confirmation before deleting." ;;
+    tr::critical_protected)   echo "Kritik sistem dosyaları ve aktif uygulama oturumları korunur." ;;
+    en::critical_protected)   echo "Critical system files and active app sessions are protected." ;;
+    tr::broken_category_row)  echo "HATA: bozuk CATEGORIES satırı" ;;
+    en::broken_category_row)  echo "ERROR: broken CATEGORIES row" ;;
+    tr::spotlight_rebuild)    echo "Spotlight indexing rebuilt successfully." ;;
+    en::spotlight_rebuild)    echo "Spotlight indexing rebuilt successfully." ;;
+
+    # ── Fallback ─────────────────────────────────────────────
+    *) echo "$key" ;;
+  esac
+}
+
+# Resolved category name via localization
+cat_display_name() {
+  local id="$1"
+  L "cat_${id}"
+}
+
+# ─── Colors (disabled if not a terminal) ─────────────────────────────────────
 if [ -t 1 ]; then
   RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
   CYAN='\033[0;36m'; BLUE='\033[0;34m'; BOLD='\033[1m'
@@ -18,14 +318,17 @@ else
   RED=''; YELLOW=''; GREEN=''; CYAN=''; BLUE=''; BOLD=''; DIM=''; NC=''
 fi
 
-VERSION="1.1.0"
+VERSION="2.0.0"
 SUDO_AVAILABLE=false
 TOTAL_FREED=0
 TOTAL_ITEMS=0
 JSON_MODE=false
 CLEAN_RESULTS=()
 
-# JSON modunda temizlenecek alt öğe listeleri (virgülle ayrılmış)
+# When set to 1, bypass trash-first and use rm -rf directly (for CI/testing)
+FORCE_RM="${APPLE_CLEANUP_FORCE_RM:-0}"
+
+# JSON mode sub-item lists (comma-separated, parsed via IFS read -ra)
 APP_LEFTOVERS_CLEAN=""
 BROWSER_FULL_CLEAN=""
 DEVELOPER_CLEAN=""
@@ -34,7 +337,15 @@ APP_UNINSTALLER_CLEAN=""
 
 MAIL_DOWNLOADS_DIR="$HOME/Library/Containers/com.apple.mail/Data/Library/Mail Downloads"
 
-# Tarayıcı cache dizinleri (~/Library/Caches içindeki üst-seviye klasör adları)
+# ─── Developer sub-item whitelist (for case-validation) ──────────────────────
+# Must be kept 100% in sync with server.py _DEVELOPER_WHITELIST
+_VALID_DEVELOPER_KEYS="derived_data|broken_links|brew_cache|docker_prune|npm_cache|pip_cache|device_support|coresim_caches|xcode_archives|cocoapods_cache|pnpm_cache|yarn_cache|gradle_cache|maven_repo|simctl_unavailable"
+
+# ─── Browser key whitelist ───────────────────────────────────────────────────
+# Must be kept 100% in sync with server.py _BROWSER_WHITELIST
+_VALID_BROWSER_KEYS="safari|cookies|chrome|firefox|brave|edge|opera|arc"
+
+# Browser cache dirs (top-level folder names under ~/Library/Caches)
 BROWSER_CACHE_TOPDIRS=(
   "com.apple.Safari"
   "com.apple.WebKit.Networking"
@@ -50,7 +361,7 @@ BROWSER_CACHE_TOPDIRS=(
   "com.vivaldi.Vivaldi"
 )
 
-# Tarayıcı profil dizinleri (çerezler, geçmiş vb.)
+# Browser profile dirs (cookies, history, etc.)
 BROWSER_FULL_DIRS=(
   "$HOME/Library/Safari"
   "$HOME/Library/Cookies"
@@ -62,61 +373,67 @@ BROWSER_FULL_DIRS=(
   "$HOME/Library/Application Support/Arc"
 )
 
-# ─── Kategori Registry'si (bash 3.2 uyumlu: tek dizi, pipe-ayrılmış satırlar) ──
-# Format: id|ad|scan_fn|clean_fn|needs_sudo|risk|in_total
+# ─── Category Registry (Bash 3.2 compatible: single array, pipe-separated) ──
+# Format: id|name_key|scan_fn|clean_fn|needs_sudo|risk|in_total
+#   name_key: localization key (resolved via cat_display_name)
 #   risk:     safe | caution | danger
-#   in_total: 1 → manşet TOPLAM'a girer, 0 → girmez (örtüşen/interaktif seçici)
+#   in_total: 1 → included in headline TOTAL, 0 → excluded (overlapping/interactive)
 CATEGORIES=(
-  "user_cache|Kullanıcı Cache|scan_user_cache|clean_user_cache|0|safe|1"
-  "system_cache|Sistem Cache|scan_system_cache|clean_system_cache|1|safe|1"
-  "app_leftovers|Uygulama Kalıntıları|scan_app_leftovers|clean_app_leftovers|0|caution|1"
-  "logs|Loglar|scan_logs|clean_logs|0|safe|1"
-  "temp_files|Geçici Dosyalar|scan_temp_files|clean_temp_files|0|safe|1"
-  "developer|Geliştirici|scan_developer|clean_developer|0|caution|1"
-  "trash|Çöp Kutusu|scan_trash|clean_trash|0|safe|1"
-  "browser_cache|Tarayıcı Cache|scan_browser_cache|clean_browser_cache|0|safe|1"
-  "browser_full|Tarayıcı Tüm Veri|scan_browser_full|clean_browser_full|0|danger|1"
-  "ios_backups|iOS Yedekleri|scan_ios_backups|clean_ios_backups|0|caution|1"
-  "app_uninstaller|Tam Uygulama Kaldırıcı|scan_app_uninstaller|clean_app_uninstaller|0|caution|0"
-  "mail_downloads|Mail İndirilenleri|scan_mail_downloads|clean_mail_downloads|0|safe|1"
-  "diagnostic_reports|Tanılama Raporları|scan_diagnostic_reports|clean_diagnostic_reports|0|safe|0"
-  "quicklook_cache|QuickLook Cache|scan_quicklook_cache|clean_quicklook_cache|0|safe|1"
-  "saved_app_state|Kaydedilmiş Uygulama Durumu|scan_saved_app_state|clean_saved_app_state|0|caution|1"
-  "other_trash|Diğer Ciltlerin Çöpü|scan_other_trash|clean_other_trash|0|safe|1"
+  "user_cache|cat_user_cache|scan_user_cache|clean_user_cache|0|safe|1"
+  "system_cache|cat_system_cache|scan_system_cache|clean_system_cache|1|safe|1"
+  "app_leftovers|cat_app_leftovers|scan_app_leftovers|clean_app_leftovers|0|caution|1"
+  "logs|cat_logs|scan_logs|clean_logs|0|safe|1"
+  "temp_files|cat_temp_files|scan_temp_files|clean_temp_files|0|safe|1"
+  "developer|cat_developer|scan_developer|clean_developer|0|caution|1"
+  "trash|cat_trash|scan_trash|clean_trash|0|safe|1"
+  "browser_cache|cat_browser_cache|scan_browser_cache|clean_browser_cache|0|safe|1"
+  "browser_full|cat_browser_full|scan_browser_full|clean_browser_full|0|danger|1"
+  "ios_backups|cat_ios_backups|scan_ios_backups|clean_ios_backups|0|caution|1"
+  "app_uninstaller|cat_app_uninstaller|scan_app_uninstaller|clean_app_uninstaller|0|caution|0"
+  "mail_downloads|cat_mail_downloads|scan_mail_downloads|clean_mail_downloads|0|safe|1"
+  "diagnostic_reports|cat_diagnostic_reports|scan_diagnostic_reports|clean_diagnostic_reports|0|safe|0"
+  "quicklook_cache|cat_quicklook_cache|scan_quicklook_cache|clean_quicklook_cache|0|safe|1"
+  "saved_app_state|cat_saved_app_state|scan_saved_app_state|clean_saved_app_state|0|caution|1"
+  "other_trash|cat_other_trash|scan_other_trash|clean_other_trash|0|safe|1"
 )
 
-# Registry'den paralel dizileri türet (mevcut indeks-tabanlı kod korunur)
-CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
+# Derive parallel arrays from registry (preserves index-based access)
+CAT_IDS=(); CAT_NAME_KEYS=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
 init_categories() {
-  CAT_IDS=(); CAT_NAMES=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
-  local row id name scan clean sudo risk in_total
-  # scan_fn/clean_fn alanları şimdilik türetilmiyor; ileride cat_field ile okunur.
+  CAT_IDS=(); CAT_NAME_KEYS=(); CAT_NEEDS_SUDO=(); CAT_RISKS=(); CAT_IN_TOTAL=(); CAT_SIZES=()
+  local row id name_key scan clean sudo risk in_total
   for row in "${CATEGORIES[@]}"; do
-    IFS='|' read -r id name scan clean sudo risk in_total <<< "$row"
+    IFS='|' read -r id name_key scan clean sudo risk in_total <<< "$row"
     if [ -z "$in_total" ]; then
-      echo "HATA: bozuk CATEGORIES satırı: $row" >&2
+      echo "$(L broken_category_row): $row" >&2
       exit 1
     fi
-    CAT_IDS+=("$id"); CAT_NAMES+=("$name"); CAT_NEEDS_SUDO+=("$sudo")
+    CAT_IDS+=("$id"); CAT_NAME_KEYS+=("$name_key"); CAT_NEEDS_SUDO+=("$sudo")
     CAT_RISKS+=("$risk"); CAT_IN_TOTAL+=("$in_total"); CAT_SIZES+=(0)
   done
 }
 init_categories
 
-# Registry satırından alan oku: cat_field <index> <field>
-# field: id|name|scan_fn|clean_fn|needs_sudo|risk|in_total
+# Read field from registry row: cat_field <index> <field>
+# field: id|name_key|scan_fn|clean_fn|needs_sudo|risk|in_total
 cat_field() {
   local idx="$1" field="$2"
-  local id name scan clean sudo risk in_total
-  IFS='|' read -r id name scan clean sudo risk in_total <<< "${CATEGORIES[$idx]}"
+  local id name_key scan clean sudo risk in_total
+  IFS='|' read -r id name_key scan clean sudo risk in_total <<< "${CATEGORIES[$idx]}"
   case "$field" in
-    id) echo "$id" ;; name) echo "$name" ;; scan_fn) echo "$scan" ;;
+    id) echo "$id" ;; name_key) echo "$name_key" ;; scan_fn) echo "$scan" ;;
     clean_fn) echo "$clean" ;; needs_sudo) echo "$sudo" ;;
     risk) echo "$risk" ;; in_total) echo "$in_total" ;;
   esac
 }
 
-# id → indeks (bulunamazsa -1)
+# Resolve display name for index
+cat_name() {
+  local idx="$1"
+  cat_display_name "${CAT_IDS[$idx]}"
+}
+
+# id → index (returns -1 if not found)
 cat_index_by_id() {
   local want="$1" i
   for i in "${!CAT_IDS[@]}"; do
@@ -125,7 +442,7 @@ cat_index_by_id() {
   echo "-1"
 }
 
-# ─── UI ─────────────────────────────────────────────────────────────────────
+# ─── UI ──────────────────────────────────────────────────────────────────────
 header() {
   echo ""
   echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -142,7 +459,7 @@ success() { echo -e "  ${GREEN}✓${NC}  $1"; }
 warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 err()     { echo -e "  ${RED}✗${NC}  $1" >&2; }
 
-# ─── Boyut Yardımcıları ──────────────────────────────────────────────────────
+# ─── Size Helpers ────────────────────────────────────────────────────────────
 format_bytes() {
   local b=$1
   if   [ "$b" -ge 1073741824 ]; then printf "%.1f GB" "$(echo "scale=1; $b/1073741824" | bc)"
@@ -184,39 +501,97 @@ get_free_disk() {
   df -h / 2>/dev/null | awk 'NR==2 {print $4}' || echo "?"
 }
 
-# ─── Etkileşim ──────────────────────────────────────────────────────────────
+# ─── Interaction ─────────────────────────────────────────────────────────────
 confirm() {
-  local prompt="${1:-Devam etmek istiyor musunuz?}"
+  local prompt="${1:-$(L continue_prompt)}"
   local answer
-  echo -ne "  ${YELLOW}?${NC}  $prompt [e/H]: "
+  echo -ne "  ${YELLOW}?${NC}  $prompt $(L confirm_yes_no): "
   read -r answer
   [[ "$answer" =~ ^[eEyY]$ ]]
 }
 
-# ─── Güvenli Silme ───────────────────────────────────────────────────────────
+# ─── Trash-First Safe Deletion Infrastructure ────────────────────────────────
+# Moves a file/directory to macOS Trash via AppleScript; falls back to mv ~/.Trash
+# Returns 0 on success, 1 on failure
+_trash_item() {
+  local path="$1"
+  [ -e "$path" ] || return 0
+
+  # Tier 1: AppleScript (native Finder trash with undo support)
+  if osascript -e 'tell application "Finder" to move POSIX file "'"$path"'" to trash' 2>/dev/null; then
+    return 0
+  fi
+
+  # Tier 2: Manual mv to ~/.Trash with collision-safe naming
+  local base dest
+  base=$(basename "$path")
+  dest="$HOME/.Trash/$base"
+  if [ -e "$dest" ]; then
+    # Append timestamp to avoid collision
+    dest="$HOME/.Trash/${base}.$(date +%s)"
+  fi
+  if mv "$path" "$dest" 2>/dev/null; then
+    return 0
+  fi
+
+  return 1
+}
+
+# Determine if we should use rm -rf or trash-first for a given context
+# Arguments: needs_sudo_flag (0 or 1), is_trash_empty (0 or 1)
+_should_force_rm() {
+  local needs_sudo="${1:-0}"
+  local is_trash_empty="${2:-0}"
+  # Force RM conditions:
+  #   1. CI/test bypass env var
+  #   2. Category requires sudo (system paths)
+  #   3. We are emptying the trash itself
+  [ "$FORCE_RM" = "1" ] && return 0
+  [ "$needs_sudo" -eq 1 ] && return 0
+  [ "$is_trash_empty" -eq 1 ] && return 0
+  return 1
+}
+
+# Context variable: set by clean functions to indicate sudo context
+_CURRENT_NEEDS_SUDO=0
+_CURRENT_IS_TRASH_EMPTY=0
+
 safe_rm() {
   local path="$1"
   local label="${2:-$1}"
-  [ -z "$path" ] && { err "Boş path, atlanıyor: $label"; return 1; }
+  [ -z "$path" ] && { err "$(L empty_path): $label"; return 1; }
   case "$path" in
     /System/*|/usr/*|/bin/*|/sbin/*|/etc/*|/private/etc/*)
-      err "Korunan sistem yolu, dokunulmadı: $path"; return 1 ;;
+      err "$(L protected_path): $path"; return 1 ;;
   esac
   [ -e "$path" ] || return 0
   local sz_b; sz_b=$(get_size_bytes "$path")
   local sz_h; sz_h=$(format_bytes "$sz_b")
-  if $SUDO_AVAILABLE; then
-    sudo rm -rf "$path" 2>/dev/null && {
-      success "$label: ${BOLD}${sz_h}${NC} silindi"
-      TOTAL_FREED=$((TOTAL_FREED + sz_b))
-      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-    } || err "$label silinemedi"
+
+  if _should_force_rm "$_CURRENT_NEEDS_SUDO" "$_CURRENT_IS_TRASH_EMPTY"; then
+    # Direct rm -rf (sudo paths, trash emptying, or CI mode)
+    if $SUDO_AVAILABLE && [ "$_CURRENT_NEEDS_SUDO" -eq 1 ]; then
+      sudo rm -rf "$path" 2>/dev/null && {
+        success "$label: ${BOLD}${sz_h}${NC} $(L deleted)"
+        TOTAL_FREED=$((TOTAL_FREED + sz_b))
+        TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+      } || err "$label $(L delete_failed)"
+    else
+      rm -rf "$path" 2>/dev/null && {
+        success "$label: ${BOLD}${sz_h}${NC} $(L deleted)"
+        TOTAL_FREED=$((TOTAL_FREED + sz_b))
+        TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+      } || err "$label $(L delete_failed)"
+    fi
   else
-    rm -rf "$path" 2>/dev/null && {
-      success "$label: ${BOLD}${sz_h}${NC} silindi"
+    # Trash-first (user files, non-sudo)
+    if _trash_item "$path"; then
+      success "$label: ${BOLD}${sz_h}${NC} $(L trashed)"
       TOTAL_FREED=$((TOTAL_FREED + sz_b))
       TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-    } || err "$label silinemedi"
+    else
+      err "$label $(L delete_failed)"
+    fi
   fi
 }
 
@@ -226,45 +601,61 @@ safe_rm_contents() {
   [ -d "$path" ] || return 0
   [ -z "$path" ] && return 1
   case "$path" in
-    /System/*|/usr/*|/bin/*|/sbin/*|/etc/*|/private/etc/*) err "Korunan yol: $path"; return 1 ;;
+    /System/*|/usr/*|/bin/*|/sbin/*|/etc/*|/private/etc/*) err "$(L protected_path): $path"; return 1 ;;
   esac
   local sz_b; sz_b=$(get_dir_size_bytes "$path")
   [ "$sz_b" -le 0 ] 2>/dev/null && return 0
   local sz_h; sz_h=$(format_bytes "$sz_b")
-  if $SUDO_AVAILABLE; then
-    sudo find "$path" -maxdepth 1 -mindepth 1 -exec rm -rf {} + 2>/dev/null && {
-      success "$label: ${BOLD}${sz_h}${NC} silindi"
-      TOTAL_FREED=$((TOTAL_FREED + sz_b))
-      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-    } || err "$label silinemedi"
-  else
-    find "$path" -maxdepth 1 -mindepth 1 -exec rm -rf {} + 2>/dev/null && {
-      success "$label: ${BOLD}${sz_h}${NC} silindi"
-      TOTAL_FREED=$((TOTAL_FREED + sz_b))
-      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-    } || err "$label silinemedi"
-  fi
-}
 
-# ─── Sudo Kontrolü ──────────────────────────────────────────────────────────
-sudo_check() {
-  echo ""
-  info "Sistem Cache ve Loglar için ${BOLD}sudo${NC} yetkisi gerekebilir."
-  info "Sudo olmadan bu kategoriler otomatik atlanır."
-  echo ""
-  if confirm "Sudo yetkisi ile çalışmak ister misiniz?"; then
-    if sudo -v 2>/dev/null; then
-      SUDO_AVAILABLE=true
-      success "Sudo yetki alındı."
+  if _should_force_rm "$_CURRENT_NEEDS_SUDO" "$_CURRENT_IS_TRASH_EMPTY"; then
+    # Direct rm -rf (sudo paths, trash emptying, or CI mode)
+    if $SUDO_AVAILABLE && [ "$_CURRENT_NEEDS_SUDO" -eq 1 ]; then
+      sudo find "$path" -maxdepth 1 -mindepth 1 -exec rm -rf {} + 2>/dev/null && {
+        success "$label: ${BOLD}${sz_h}${NC} $(L deleted)"
+        TOTAL_FREED=$((TOTAL_FREED + sz_b))
+        TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+      } || err "$label $(L delete_failed)"
     else
-      warn "Sudo yetki alınamadı. Sistem kategorileri atlanacak."
+      find "$path" -maxdepth 1 -mindepth 1 -exec rm -rf {} + 2>/dev/null && {
+        success "$label: ${BOLD}${sz_h}${NC} $(L deleted)"
+        TOTAL_FREED=$((TOTAL_FREED + sz_b))
+        TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+      } || err "$label $(L delete_failed)"
     fi
   else
-    info "Sudo atlandı. Sadece kullanıcı seviyesi temizlik yapılacak."
+    # Trash-first: move each child item to trash individually
+    local trashed_any=false
+    local child
+    while IFS= read -r -d '' child; do
+      _trash_item "$child" && trashed_any=true
+    done < <(find "$path" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+    if $trashed_any; then
+      success "$label: ${BOLD}${sz_h}${NC} $(L trashed)"
+      TOTAL_FREED=$((TOTAL_FREED + sz_b))
+      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+    fi
   fi
 }
 
-# ─── Tarayıcı Dizin Kontrolü ─────────────────────────────────────────────────
+# ─── Sudo Check ─────────────────────────────────────────────────────────────
+sudo_check() {
+  echo ""
+  info "$(L sudo_info)"
+  info "$(L sudo_skip_info)"
+  echo ""
+  if confirm "$(L sudo_prompt)"; then
+    if sudo -v 2>/dev/null; then
+      SUDO_AVAILABLE=true
+      success "$(L sudo_granted)"
+    else
+      warn "$(L sudo_failed)"
+    fi
+  else
+    info "$(L sudo_declined)"
+  fi
+}
+
+# ─── Browser Dir Check ──────────────────────────────────────────────────────
 is_browser_cache_dir() {
   local name; name=$(basename "$1")
   local d
@@ -274,7 +665,7 @@ is_browser_cache_dir() {
   return 1
 }
 
-# ─── Uygulama Kurulum Kontrol Heuristiği ──────────────────────────────────────
+# ─── App Installation Heuristic ──────────────────────────────────────────────
 get_app_name_for_dir() {
   local dir_name="$1"
   case "$dir_name" in
@@ -304,7 +695,7 @@ get_app_name_for_dir() {
 
 is_app_installed() {
   local dir_name="$1"
-  # Kritik sistem ve korunan klasörler her zaman kurulu kabul edilir ve korunur
+  # Critical system and protected folders are always considered installed
   case "$dir_name" in
     Apple|com.apple.*|com.google.*|com.microsoft.*|com.adobe.*|\
     com.oracle.*|Homebrew|\
@@ -329,7 +720,7 @@ is_app_installed() {
   return 1
 }
 
-# ─── Tarama ─────────────────────────────────────────────────────────────────
+# ─── Scan Functions ──────────────────────────────────────────────────────────
 scan_user_cache() {
   local total=0
   local item
@@ -476,10 +867,6 @@ scan_diagnostic_reports() {
   local i; i=$(cat_index_by_id diagnostic_reports)
   CAT_SIZES[$i]=$(get_dir_size_bytes "$HOME/Library/Logs/DiagnosticReports")
 }
-clean_diagnostic_reports() {
-  header "🩺 Tanılama Raporları Temizleniyor"
-  safe_rm_contents "$HOME/Library/Logs/DiagnosticReports" "DiagnosticReports"
-}
 
 scan_quicklook_cache() {
   local i; i=$(cat_index_by_id quicklook_cache)
@@ -487,24 +874,10 @@ scan_quicklook_cache() {
   qldir="$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null)com.apple.quicklook.ThumbnailsAgent/com.apple.QuickLook.thumbnailcache"
   CAT_SIZES[$i]=$(get_dir_size_bytes "$qldir")
 }
-clean_quicklook_cache() {
-  header "🖼️  QuickLook Cache Temizleniyor"
-  if command -v qlmanage &>/dev/null; then
-    qlmanage -r cache >/dev/null 2>&1 \
-      && success "QuickLook thumbnail cache sıfırlandı" \
-      || warn "qlmanage çalıştırılamadı"
-  else
-    warn "qlmanage bulunamadı"
-  fi
-}
 
 scan_saved_app_state() {
   local i; i=$(cat_index_by_id saved_app_state)
   CAT_SIZES[$i]=$(get_dir_size_bytes "$HOME/Library/Saved Application State")
-}
-clean_saved_app_state() {
-  header "💾 Kaydedilmiş Uygulama Durumu Temizleniyor"
-  safe_rm_contents "$HOME/Library/Saved Application State" "Saved Application State"
 }
 
 scan_other_trash() {
@@ -517,60 +890,55 @@ scan_other_trash() {
   done
   CAT_SIZES[$i]=$total
 }
-clean_other_trash() {
-  header "🗑️  Diğer Ciltlerin Çöpü Temizleniyor"
-  local d
-  for d in /Volumes/*/.Trashes; do
-    [ -d "$d" ] || continue
-    safe_rm_contents "$d" "$d"
-  done
-}
 
 scan_all() {
-  header "🔍 Taranıyor..."
+  header "🔍 $(L scanning)"
   local fns=()
   local _i
   for _i in "${!CAT_IDS[@]}"; do fns+=("$(cat_field "$_i" scan_fn)"); done
   local i
   for i in "${!fns[@]}"; do
-    echo -ne "  ${DIM}${CAT_NAMES[$i]}...${NC}\r"
+    echo -ne "  ${DIM}$(cat_name "$i")...${NC}\r"
     "${fns[$i]}"
   done
-  echo -e "  ${GREEN}Tarama tamamlandı.${NC}                              "
+  echo -e "  ${GREEN}$(L scan_complete)${NC}                              "
 }
 
-# ─── Tarama Tablosu ──────────────────────────────────────────────────────────
+# ─── Scan Table ──────────────────────────────────────────────────────────────
 print_scan_table() {
-  header "📊 Tarama Sonuçları"
+  header "📊 $(L scan_results)"
   echo ""
-  printf "  ${BOLD}%-3s  %-26s  %-12s  %s${NC}\n" "#" "Kategori" "Boyut" ""
+  printf "  ${BOLD}%-3s  %-26s  %-12s  %s${NC}\n" "#" "$(L category)" "$(L size)" ""
   separator
   local total_bytes=0
   local i
   for i in "${!CAT_IDS[@]}"; do
     local sz_h; sz_h=$(format_bytes "${CAT_SIZES[$i]}")
+    local display_name; display_name=$(cat_name "$i")
     local sudo_tag=""
     [ "${CAT_NEEDS_SUDO[$i]}" -eq 1 ] && sudo_tag="${DIM}[sudo]${NC}"
     if [ "${CAT_SIZES[$i]}" -gt 0 ]; then
       printf "  ${GREEN}%-3s${NC}  %-26s  ${BOLD}%-12s${NC}  %b\n" \
-        "$((i+1))" "${CAT_NAMES[$i]}" "$sz_h" "$sudo_tag"
+        "$((i+1))" "$display_name" "$sz_h" "$sudo_tag"
     else
       printf "  ${DIM}%-3s  %-26s  %-12s  %b${NC}\n" \
-        "$((i+1))" "${CAT_NAMES[$i]}" "—" "$sudo_tag"
+        "$((i+1))" "$display_name" "—" "$sudo_tag"
     fi
     [ "${CAT_IN_TOTAL[$i]}" -eq 1 ] && total_bytes=$((total_bytes + CAT_SIZES[$i]))
   done
   separator
   local total_h; total_h=$(format_bytes "$total_bytes")
-  printf "  ${BOLD}%-3s  %-26s  %-12s${NC}\n" "" "TAHMİNİ TOPLAM" "$total_h"
+  printf "  ${BOLD}%-3s  %-26s  %-12s${NC}\n" "" "$(L estimated_total)" "$total_h"
   echo ""
-  info "Mevcut boş disk alanı: ${BOLD}$(get_free_disk)${NC}"
+  info "$(L free_disk): ${BOLD}$(get_free_disk)${NC}"
   echo ""
 }
 
-# ─── Temizleme Fonksiyonları ─────────────────────────────────────────────────
+# ─── Clean Functions ─────────────────────────────────────────────────────────
+
 clean_user_cache() {
-  header "🗑️  Kullanıcı Cache Temizleniyor (Tarayıcılar Hariç)"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_user_cache)"
   local item
   while IFS= read -r -d '' item; do
     is_browser_cache_dir "$item" && continue
@@ -578,8 +946,68 @@ clean_user_cache() {
   done < <(find "$HOME/Library/Caches" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
 }
 
+clean_system_cache() {
+  _CURRENT_NEEDS_SUDO=1; _CURRENT_IS_TRASH_EMPTY=0
+  if ! $SUDO_AVAILABLE; then warn "$(L sudo_no_skip): $(L cat_system_cache)"; return; fi
+  header "$(L hdr_system_cache)"
+  local item
+  while IFS= read -r -d '' item; do
+    local sz_b; sz_b=$(sudo du -sk "$item" 2>/dev/null | awk '{print $1*1024}') || continue
+    [ "$sz_b" -le 0 ] 2>/dev/null && continue
+    local sz_h; sz_h=$(format_bytes "$sz_b")
+    sudo rm -rf "$item" 2>/dev/null && {
+      success "$(basename "$item"): ${BOLD}${sz_h}${NC} $(L deleted)"
+      TOTAL_FREED=$((TOTAL_FREED + sz_b))
+      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+    } || err "$(basename "$item") $(L delete_failed)"
+  done < <(sudo find /Library/Caches -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+}
+
+clean_logs() {
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_logs)"
+  safe_rm_contents "$HOME/Library/Logs" "~/Library/Logs"
+  if $SUDO_AVAILABLE; then
+    _CURRENT_NEEDS_SUDO=1
+    local item
+    while IFS= read -r -d '' item; do
+      local sz_b; sz_b=$(sudo du -sk "$item" 2>/dev/null | awk '{print $1*1024}') || continue
+      [ "$sz_b" -le 0 ] 2>/dev/null && continue
+      local sz_h; sz_h=$(format_bytes "$sz_b")
+      sudo rm -rf "$item" 2>/dev/null && {
+        success "$(basename "$item"): ${BOLD}${sz_h}${NC} $(L deleted)"
+        TOTAL_FREED=$((TOTAL_FREED + sz_b))
+        TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+      } || err "$(basename "$item") $(L delete_failed)"
+    done < <(sudo find /Library/Logs -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+    _CURRENT_NEEDS_SUDO=0
+  fi
+}
+
+clean_temp_files() {
+  # Temp files are OS-managed ephemeral data — use rm -rf directly (not trash)
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=1
+  header "$(L hdr_temp)"
+  local tmpdir; tmpdir=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo "${TMPDIR:-/tmp}")
+  local cachedir; cachedir=$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || echo "")
+  safe_rm_contents "$tmpdir" "User Temp"
+  if [ -n "$cachedir" ] && [ -d "$cachedir" ]; then
+    safe_rm_contents "$cachedir" "User Var Cache"
+  fi
+  _CURRENT_IS_TRASH_EMPTY=0
+}
+
+clean_trash() {
+  # Emptying trash IS permanent deletion — use rm -rf
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=1
+  header "$(L hdr_trash)"
+  safe_rm_contents "$HOME/.Trash" "~/.Trash"
+  _CURRENT_IS_TRASH_EMPTY=0
+}
+
 clean_browser_cache() {
-  header "🌐 Tarayıcı Cache Temizleniyor (Çerezler Korunur)"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_browser_cache)"
   local d
   for d in "${BROWSER_CACHE_TOPDIRS[@]}"; do
     local path="$HOME/Library/Caches/$d"
@@ -589,11 +1017,11 @@ clean_browser_cache() {
 }
 
 clean_browser_full() {
-  header "⚠️  Tarayıcı Tüm Veriler Temizleniyor"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_browser_full)"
 
-  # Tarayıcılar ve sistem çerez yolları
   local browser_keys=("safari" "cookies" "chrome" "firefox" "brave" "edge" "opera" "arc")
-  local browser_names=("Safari" "Sistem Çerezleri" "Google Chrome" "Firefox" "Brave" "Microsoft Edge" "Opera" "Arc")
+  local browser_names=("Safari" "System Cookies" "Google Chrome" "Firefox" "Brave" "Microsoft Edge" "Opera" "Arc")
   local browser_paths=(
     "$HOME/Library/Safari"
     "$HOME/Library/Cookies"
@@ -607,22 +1035,35 @@ clean_browser_full() {
 
   if $JSON_MODE; then
     if [ -z "$BROWSER_FULL_CLEAN" ]; then
-      info "Temizlenecek tarayıcı belirtilmedi, atlanıyor."
+      info "$(L no_browser_specified)"
       return
     fi
-    local IFS_OLD="$IFS"
-    IFS=','
-    local clean_browsers=($BROWSER_FULL_CLEAN)
-    IFS="$IFS_OLD"
+
+    # ── Robust comma parsing ──
+    local parsed_browsers=()
+    IFS=',' read -ra parsed_browsers <<< "$BROWSER_FULL_CLEAN"
 
     local key
-    for key in ${clean_browsers[@]+"${clean_browsers[@]}"}; do
+    for key in "${parsed_browsers[@]}"; do
+      # Trim whitespace
+      key="${key## }"; key="${key%% }"
+      [ -z "$key" ] && continue
+
+      # Case-validate against whitelist
+      case "$key" in
+        safari|cookies|chrome|firefox|brave|edge|opera|arc) ;;
+        *)
+          err "$(L unknown_dev_key): $key" >&2
+          continue
+          ;;
+      esac
+
       local i
       for i in "${!browser_keys[@]}"; do
         if [ "${browser_keys[$i]}" = "$key" ]; then
           local path="${browser_paths[$i]}"
           if [ -e "$path" ]; then
-            safe_rm_contents "$path" "${browser_names[$i]} Profili"
+            safe_rm_contents "$path" "${browser_names[$i]} $(L profile_deleted)"
           fi
         fi
       done
@@ -632,7 +1073,7 @@ clean_browser_full() {
 
   # Interactive CLI Mode
   echo ""
-  warn "DİKKAT: Tarayıcı tüm verilerini silmek ilgili tarayıcıdaki tüm oturumları kapatır ve verileri sıfırlar!"
+  warn "$(L browser_warn)"
   echo ""
   
   local avail_keys=()
@@ -655,16 +1096,16 @@ clean_browser_full() {
   done
 
   if [ "${#avail_keys[@]}" -eq 0 ]; then
-    info "Temizlenecek tarayıcı verisi bulunamadı."
+    info "$(L no_browser_data)"
     return
   fi
 
   echo ""
-  echo -ne "  Sıfırlamak istediğiniz tarayıcı numaralarını girin (boşlukla) veya ${BOLD}none${NC}: "
+  echo -ne "  $(L browser_select) ${BOLD}none${NC}: "
   local selection; read -r selection
   
   if [ "$selection" = "none" ] || [ -z "$selection" ]; then
-    info "Tarayıcı temizliği atlandı."
+    info "$(L browser_skipped)"
     return
   fi
 
@@ -672,39 +1113,42 @@ clean_browser_full() {
   for num in ${indices[@]+"${indices[@]}"}; do
     local real_idx=$((num - 1))
     if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#avail_keys[@]}" ]; then
-      warn "Seçilen '${avail_names[$real_idx]}' profil verileri tamamen silinecek!"
-      if confirm "Emin misiniz?"; then
-        safe_rm_contents "${avail_paths[$real_idx]}" "${avail_names[$real_idx]} Profili"
+      warn "'${avail_names[$real_idx]}' $(L profile_warn)"
+      if confirm "$(L are_you_sure)"; then
+        safe_rm_contents "${avail_paths[$real_idx]}" "${avail_names[$real_idx]} $(L profile_deleted)"
       fi
     fi
   done
 }
 
 clean_ios_backups() {
-  header "📱 iOS Yedekleri Temizleniyor"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_ios_backups)"
   local backup_dir="$HOME/Library/MobileSync/Backup"
 
   if $JSON_MODE; then
     if [ -z "$IOS_BACKUPS_CLEAN" ]; then
-      info "Temizlenecek yedek belirtilmedi, atlanıyor."
+      info "$(L no_backup_specified)"
       return
     fi
-    local IFS_OLD="$IFS"
-    IFS=','
-    local clean_uuids=($IOS_BACKUPS_CLEAN)
-    IFS="$IFS_OLD"
+
+    # ── Robust comma parsing ──
+    local parsed_uuids=()
+    IFS=',' read -ra parsed_uuids <<< "$IOS_BACKUPS_CLEAN"
+
     local uuid
-    for uuid in ${clean_uuids[@]+"${clean_uuids[@]}"}; do
+    for uuid in "${parsed_uuids[@]}"; do
+      uuid="${uuid## }"; uuid="${uuid%% }"
       [ -z "$uuid" ] && continue
       case "$uuid" in
         */*|*..*)
-          err "Geçersiz UUID (path traversal girişimi): $uuid"
+          err "$(L invalid_path_traversal): $uuid"
           continue
           ;;
       esac
       local full_path="$backup_dir/$uuid"
       if [ -d "$full_path" ]; then
-        safe_rm "$full_path" "iOS Yedeği: $uuid"
+        safe_rm "$full_path" "iOS Backup: $uuid"
       fi
     done
     return
@@ -712,7 +1156,7 @@ clean_ios_backups() {
 
   # Interactive CLI Mode
   if [ ! -d "$backup_dir" ]; then
-    info "iOS yedekleri bulunamadı."
+    info "$(L no_ios_backups)"
     return
   fi
 
@@ -725,7 +1169,7 @@ clean_ios_backups() {
     base=$(basename "$item")
     sz_b=$(get_size_bytes "$item") || sz_b=0
     sz_h=$(format_bytes "$sz_b")
-    mod_date=$(stat -f "%Sm" -t "%Y-%m-%d" "$item" 2>/dev/null || echo "Bilinmiyor")
+    mod_date=$(stat -f "%Sm" -t "%Y-%m-%d" "$item" 2>/dev/null || echo "Unknown")
     printf "  ${GREEN}%-3d${NC}  %-40s  %-8s  %s\n" "$idx" "$base" "$sz_h" "$mod_date"
     backup_paths+=("$item")
     backup_names+=("$base")
@@ -733,16 +1177,16 @@ clean_ios_backups() {
   done < <(find "$backup_dir" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 
   if [ "${#backup_paths[@]}" -eq 0 ]; then
-    info "Temizlenecek iOS yedeği bulunamadı."
+    info "$(L no_ios_clean)"
     return
   fi
 
   echo ""
-  echo -ne "  Numara girin (boşlukla), ${BOLD}all${NC} veya ${BOLD}none${NC}: "
+  echo -ne "  $(L ios_select) ${BOLD}all${NC} / ${BOLD}none${NC}: "
   local selection; read -r selection
 
   if [ "$selection" = "none" ] || [ -z "$selection" ]; then
-    info "iOS yedekleri atlandı."
+    info "$(L ios_skipped)"
     return
   fi
 
@@ -756,34 +1200,37 @@ clean_ios_backups() {
   for num in ${indices[@]+"${indices[@]}"}; do
     local real_idx=$((num - 1))
     if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#backup_paths[@]}" ]; then
-      safe_rm "${backup_paths[$real_idx]}" "iOS Yedeği: ${backup_names[$real_idx]}"
+      safe_rm "${backup_paths[$real_idx]}" "iOS Backup: ${backup_names[$real_idx]}"
     fi
   done
 }
 
 clean_app_uninstaller() {
-  header "🗑️  Uygulamalar Kaldırılıyor"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_app_uninstaller)"
   if $JSON_MODE; then
     if [ -z "$APP_UNINSTALLER_CLEAN" ]; then
-      info "Kaldırılacak uygulama belirtilmedi, atlanıyor."
+      info "$(L no_app_specified)"
       return
     fi
-    local IFS_OLD="$IFS"
-    IFS=','
-    local clean_apps=($APP_UNINSTALLER_CLEAN)
-    IFS="$IFS_OLD"
+
+    # ── Robust comma parsing ──
+    local parsed_apps=()
+    IFS=',' read -ra parsed_apps <<< "$APP_UNINSTALLER_CLEAN"
+
     local app_name
-    for app_name in ${clean_apps[@]+"${clean_apps[@]}"}; do
+    for app_name in "${parsed_apps[@]}"; do
+      app_name="${app_name## }"; app_name="${app_name%% }"
       [ -z "$app_name" ] && continue
       case "$app_name" in
         */*|*..*)
-          err "Geçersiz uygulama adı (path traversal girişimi): $app_name"
+          err "$(L invalid_path_traversal): $app_name"
           continue
           ;;
       esac
       local app_path="/Applications/$app_name.app"
       if [ -d "$app_path" ]; then
-        safe_rm "$app_path" "Uygulama: $app_name"
+        safe_rm "$app_path" "App: $app_name"
       fi
       local dir
       for dir in \
@@ -792,95 +1239,85 @@ clean_app_uninstaller() {
           "$HOME/Library/Preferences/com.${app_name}.plist" \
           "$HOME/Library/Saved Application State/${app_name}.savedState"; do
         if [ -e "$dir" ]; then
-          safe_rm "$dir" "Kalıntı: $dir"
+          safe_rm "$dir" "Leftover: $dir"
         fi
       done
     done
     return
   fi
-  info "Tam Uygulama Kaldırıcı yalnızca web arayüzü üzerinden kullanılabilir."
+  info "$(L uninstaller_cli_only)"
 }
 
 clean_mail_downloads() {
-  header "📧 Mail İndirilenler Temizleniyor"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_mail_downloads)"
   if [ -d "$MAIL_DOWNLOADS_DIR" ]; then
-    safe_rm_contents "$MAIL_DOWNLOADS_DIR" "Mail İndirilenler"
+    safe_rm_contents "$MAIL_DOWNLOADS_DIR" "Mail Downloads"
   else
-    info "Mail İndirilenler klasörü bulunamadı."
+    info "$(L mail_dir_missing)"
   fi
 }
 
-clean_system_cache() {
-  if ! $SUDO_AVAILABLE; then warn "Sudo yok, Sistem Cache atlandı."; return; fi
-  header "🗑️  Sistem Cache Temizleniyor"
-  local item
-  while IFS= read -r -d '' item; do
-    local sz_b; sz_b=$(sudo du -sk "$item" 2>/dev/null | awk '{print $1*1024}') || continue
-    [ "$sz_b" -le 0 ] 2>/dev/null && continue
-    local sz_h; sz_h=$(format_bytes "$sz_b")
-    sudo rm -rf "$item" 2>/dev/null && {
-      success "$(basename "$item"): ${BOLD}${sz_h}${NC} silindi"
-      TOTAL_FREED=$((TOTAL_FREED + sz_b))
-      TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-    } || err "$(basename "$item") silinemedi"
-  done < <(sudo find /Library/Caches -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+clean_diagnostic_reports() {
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_diagnostic)"
+  safe_rm_contents "$HOME/Library/Logs/DiagnosticReports" "DiagnosticReports"
 }
 
-clean_logs() {
-  header "🗑️  Loglar Temizleniyor"
-  safe_rm_contents "$HOME/Library/Logs" "~/Library/Logs"
-  if $SUDO_AVAILABLE; then
-    local item
-    while IFS= read -r -d '' item; do
-      local sz_b; sz_b=$(sudo du -sk "$item" 2>/dev/null | awk '{print $1*1024}') || continue
-      [ "$sz_b" -le 0 ] 2>/dev/null && continue
-      local sz_h; sz_h=$(format_bytes "$sz_b")
-      sudo rm -rf "$item" 2>/dev/null && {
-        success "$(basename "$item"): ${BOLD}${sz_h}${NC} silindi"
-        TOTAL_FREED=$((TOTAL_FREED + sz_b))
-        TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-      } || err "$(basename "$item") silinemedi"
-    done < <(sudo find /Library/Logs -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+clean_quicklook_cache() {
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_quicklook)"
+  if command -v qlmanage &>/dev/null; then
+    qlmanage -r cache >/dev/null 2>&1 \
+      && success "$(L ql_reset)" \
+      || warn "$(L ql_failed)"
+  else
+    warn "$(L ql_missing)"
   fi
 }
 
-clean_temp_files() {
-  header "🗑️  Geçici Dosyalar Temizleniyor"
-  local tmpdir; tmpdir=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo "${TMPDIR:-/tmp}")
-  local cachedir; cachedir=$(getconf DARWIN_USER_CACHE_DIR 2>/dev/null || echo "")
-  safe_rm_contents "$tmpdir" "Kullanıcı Temp"
-  if [ -n "$cachedir" ] && [ -d "$cachedir" ]; then
-    safe_rm_contents "$cachedir" "Kullanıcı Var Cache"
-  fi
+clean_saved_app_state() {
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_saved_state)"
+  safe_rm_contents "$HOME/Library/Saved Application State" "Saved Application State"
 }
 
-clean_trash() {
-  header "🗑️  Çöp Kutusu Temizleniyor"
-  safe_rm_contents "$HOME/.Trash" "~/.Trash"
+clean_other_trash() {
+  # Other volumes trash — permanent deletion (same as emptying trash)
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=1
+  header "$(L hdr_other_trash)"
+  local d
+  for d in /Volumes/*/.Trashes; do
+    [ -d "$d" ] || continue
+    safe_rm_contents "$d" "$d"
+  done
+  _CURRENT_IS_TRASH_EMPTY=0
 }
 
 clean_app_leftovers() {
-  header "📂 Uygulama Kalıntıları Temizleniyor"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_app_leftovers)"
 
-  # Eğer JSON modundaysak ve temizlenecek alt dizinler belirtilmişse
   if $JSON_MODE; then
     if [ -z "$APP_LEFTOVERS_CLEAN" ]; then
-      info "Temizlenecek alt dizin belirtilmedi, atlanıyor."
+      info "$(L no_subdir_specified)"
       return
     fi
-    local IFS_OLD="$IFS"
-    IFS=','
-    local clean_dirs=($APP_LEFTOVERS_CLEAN)
-    IFS="$IFS_OLD"
+
+    # ── Robust comma parsing ──
+    local parsed_dirs=()
+    IFS=',' read -ra parsed_dirs <<< "$APP_LEFTOVERS_CLEAN"
     
     local d
-    for d in "${clean_dirs[@]}"; do
-      # Güvenlik: Dizin yolunu kontrol et, sadece ~/Library/Application Support altında olmalı
+    for d in "${parsed_dirs[@]}"; do
+      d="${d## }"; d="${d%% }"
+      [ -z "$d" ] && continue
+      # Security: only ~/Library/Application Support subdirs
       local full_path="$HOME/Library/Application Support/$d"
       if [ -d "$full_path" ]; then
         safe_rm "$full_path" "$d (Application Support)"
       fi
-      # Tercih dosyası (.plist) varsa onu da temizle
+      # Also clean preference plist if exists (except system ones)
       local plist_path="$HOME/Library/Preferences/$d.plist"
       case "$d" in
         com.apple.*|com.google.*|com.microsoft.*) ;;
@@ -896,7 +1333,7 @@ clean_app_leftovers() {
 
   # Interactive CLI Mode
   echo ""
-  echo -e "  ${BOLD}~/Library/Application Support/ klasörleri (Analiz Edildi):${NC}"
+  echo -e "  ${BOLD}$(L app_support_header)${NC}"
   echo ""
   
   local as_paths=()
@@ -924,10 +1361,10 @@ clean_app_leftovers() {
     fi
     
     if [ "$is_installed" -eq 0 ]; then
-      printf "  ${GREEN}%-3d${NC}  %-42s  %-8s  ${GREEN}[Kalıntı - Önerilen]${NC}\n" "$idx" "$base" "$sz_h"
+      printf "  ${GREEN}%-3d${NC}  %-42s  %-8s  ${GREEN}[$(L orphan_suggested)]${NC}\n" "$idx" "$base" "$sz_h"
       as_orphaned+=("true")
     else
-      printf "  ${DIM}%-3d  %-42s  %-8s  [Yüklü - Korunuyor]${NC}\n" "$idx" "$base" "$sz_h"
+      printf "  ${DIM}%-3d  %-42s  %-8s  [$(L installed_protected)]${NC}\n" "$idx" "$base" "$sz_h"
       as_orphaned+=("false")
     fi
     as_paths+=("$item")
@@ -936,7 +1373,7 @@ clean_app_leftovers() {
   done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 
   echo ""
-  echo -e "  Numara girin (boşlukla), ${BOLD}orphans${NC} = sadece kalıntılar, ${BOLD}none${NC} = atla:"
+  echo -e "  $(L leftovers_select) ${BOLD}orphans${NC} = $(L orphans_only), ${BOLD}none${NC} = $(L skip):"
   echo -ne "  > "
   local selection; read -r selection
 
@@ -949,8 +1386,8 @@ clean_app_leftovers() {
         fi
       done
     elif [ "$selection" = "all" ]; then
-      warn "UYARI: 'all' seçeneği yüklü uygulamaların (örn. Chrome, VSCode) ayarlarını da silecektir!"
-      if confirm "Yüklü uygulamaların ayarlarını da silmek istediğinize emin misiniz?"; then
+      warn "$(L all_warn)"
+      if confirm "$(L all_confirm)"; then
         local j; for j in "${!as_paths[@]}"; do indices+=("$((j+1))"); done
       else
         local j; for j in "${!as_paths[@]}"; do
@@ -958,7 +1395,7 @@ clean_app_leftovers() {
             indices+=("$((j+1))");
           fi
         done
-        info "Sadece kalıntılar seçildi."
+        info "$(L orphans_selected)"
       fi
     else
       read -ra indices <<< "$selection"
@@ -976,87 +1413,110 @@ clean_app_leftovers() {
       fi
     done
   else
-    info "Application Support atlandı."
+    info "$(L app_support_skipped)"
   fi
 }
 
 clean_developer() {
-  header "🛠  Geliştirici Verileri Temizleniyor"
+  _CURRENT_NEEDS_SUDO=0; _CURRENT_IS_TRASH_EMPTY=0
+  header "$(L hdr_developer)"
 
   local deriveddata="$HOME/Library/Developer/Xcode/DerivedData"
   
   if $JSON_MODE; then
     if [ -z "$DEVELOPER_CLEAN" ]; then
-      info "Temizlenecek geliştirici alt kategorisi belirtilmedi, atlanıyor."
+      info "$(L no_dev_specified)"
       return
     fi
-    local IFS_OLD="$IFS"
-    IFS=','
-    local clean_items=($DEVELOPER_CLEAN)
-    IFS="$IFS_OLD"
+
+    # ── Robust comma parsing with case-validated whitelist ──
+    local parsed_items=()
+    IFS=',' read -ra parsed_items <<< "$DEVELOPER_CLEAN"
     
     local item
-    for item in ${clean_items[@]+"${clean_items[@]}"}; do
-      if [ "$item" = "derived_data" ]; then
-        if [ -d "$deriveddata" ]; then
-          safe_rm_contents "$deriveddata" "Xcode DerivedData"
-        fi
-      elif [ "$item" = "broken_links" ]; then
-        clean_broken_symlinks_silent
-      elif [ "$item" = "brew_cache" ]; then
-        local brew_path=""
-        if command -v brew &>/dev/null; then
-          brew_path=$(brew --cache 2>/dev/null || echo "")
-        fi
-        [ -z "$brew_path" ] && brew_path="$HOME/Library/Caches/Homebrew"
-        [ -d "$brew_path" ] && safe_rm_contents "$brew_path" "Homebrew Cache"
-      elif [ "$item" = "docker_prune" ]; then
-        if command -v docker &>/dev/null; then
-          docker system prune -a -f --volumes 2>/dev/null || true
-          success "Docker verileri temizlendi."
-        else
-          info "Docker bulunamadı, atlanıyor."
-        fi
-      elif [ "$item" = "npm_cache" ]; then
-        local npm_cache="$HOME/.npm/_cacache"
-        [ -d "$npm_cache" ] && safe_rm_contents "$npm_cache" "npm Cache"
-      elif [ "$item" = "pip_cache" ]; then
-        local pip_cache="$HOME/Library/Caches/pip"
-        [ -d "$pip_cache" ] && safe_rm_contents "$pip_cache" "pip Cache"
-      elif [ "$item" = "device_support" ]; then
-        safe_rm_contents "$HOME/Library/Developer/Xcode/iOS DeviceSupport" "iOS DeviceSupport"
-      elif [ "$item" = "coresim_caches" ]; then
-        safe_rm_contents "$HOME/Library/Developer/CoreSimulator/Caches" "CoreSimulator Caches"
-      elif [ "$item" = "xcode_archives" ]; then
-        safe_rm_contents "$HOME/Library/Developer/Xcode/Archives" "Xcode Archives"
-      elif [ "$item" = "cocoapods_cache" ]; then
-        safe_rm_contents "$HOME/Library/Caches/CocoaPods" "CocoaPods Cache"
-      elif [ "$item" = "pnpm_cache" ]; then
-        safe_rm_contents "$HOME/Library/pnpm/store" "pnpm Store"
-      elif [ "$item" = "yarn_cache" ]; then
-        safe_rm_contents "$HOME/Library/Caches/Yarn" "Yarn Cache"
-      elif [ "$item" = "gradle_cache" ]; then
-        safe_rm_contents "$HOME/.gradle/caches" "Gradle Cache"
-      elif [ "$item" = "maven_repo" ]; then
-        safe_rm_contents "$HOME/.m2/repository" "Maven Repository"
-      elif [ "$item" = "simctl_unavailable" ]; then
-        if command -v xcrun &>/dev/null; then
-          xcrun simctl delete unavailable >/dev/null 2>&1 \
-            && success "Erişilmez simülatörler silindi" \
-            || warn "simctl çalıştırılamadı"
-        fi
-      fi
+    for item in "${parsed_items[@]}"; do
+      item="${item## }"; item="${item%% }"
+      [ -z "$item" ] && continue
+
+      # Case-validate against the developer whitelist
+      case "$item" in
+        derived_data)
+          [ -d "$deriveddata" ] && safe_rm_contents "$deriveddata" "Xcode DerivedData"
+          ;;
+        broken_links)
+          clean_broken_symlinks_silent
+          ;;
+        brew_cache)
+          local brew_path=""
+          if command -v brew &>/dev/null; then
+            brew_path=$(brew --cache 2>/dev/null || echo "")
+          fi
+          [ -z "$brew_path" ] && brew_path="$HOME/Library/Caches/Homebrew"
+          [ -d "$brew_path" ] && safe_rm_contents "$brew_path" "Homebrew Cache"
+          ;;
+        docker_prune)
+          if command -v docker &>/dev/null; then
+            docker system prune -a -f --volumes 2>/dev/null || true
+            success "$(L docker_cleaned)"
+          else
+            info "$(L docker_missing)"
+          fi
+          ;;
+        npm_cache)
+          local npm_cache="$HOME/.npm/_cacache"
+          [ -d "$npm_cache" ] && safe_rm_contents "$npm_cache" "npm Cache"
+          ;;
+        pip_cache)
+          local pip_cache="$HOME/Library/Caches/pip"
+          [ -d "$pip_cache" ] && safe_rm_contents "$pip_cache" "pip Cache"
+          ;;
+        device_support)
+          safe_rm_contents "$HOME/Library/Developer/Xcode/iOS DeviceSupport" "iOS DeviceSupport"
+          ;;
+        coresim_caches)
+          safe_rm_contents "$HOME/Library/Developer/CoreSimulator/Caches" "CoreSimulator Caches"
+          ;;
+        xcode_archives)
+          safe_rm_contents "$HOME/Library/Developer/Xcode/Archives" "Xcode Archives"
+          ;;
+        cocoapods_cache)
+          safe_rm_contents "$HOME/Library/Caches/CocoaPods" "CocoaPods Cache"
+          ;;
+        pnpm_cache)
+          safe_rm_contents "$HOME/Library/pnpm/store" "pnpm Store"
+          ;;
+        yarn_cache)
+          safe_rm_contents "$HOME/Library/Caches/Yarn" "Yarn Cache"
+          ;;
+        gradle_cache)
+          safe_rm_contents "$HOME/.gradle/caches" "Gradle Cache"
+          ;;
+        maven_repo)
+          safe_rm_contents "$HOME/.m2/repository" "Maven Repository"
+          ;;
+        simctl_unavailable)
+          if command -v xcrun &>/dev/null; then
+            xcrun simctl delete unavailable >/dev/null 2>&1 \
+              && success "$(L simctl_deleted)" \
+              || warn "$(L simctl_failed)"
+          fi
+          ;;
+        *)
+          # Unknown key — warn and skip (never silently swallow)
+          warn "$(L unknown_dev_key): '$item'"
+          ;;
+      esac
     done
     return
   fi
 
   # Interactive CLI Mode
   if [ -d "$deriveddata" ]; then
-    if confirm "Xcode DerivedData temizlensin mi?"; then
+    if confirm "$(L xcode_dd_prompt)"; then
       safe_rm_contents "$deriveddata" "Xcode DerivedData"
     fi
   else
-    info "Xcode DerivedData bulunamadı."
+    info "$(L xcode_dd_missing)"
   fi
 
   clean_broken_symlinks_interactive
@@ -1088,7 +1548,7 @@ clean_broken_symlinks_silent() {
 
 clean_broken_symlinks_interactive() {
   echo ""
-  echo -e "  ${BOLD}Kırık sembolik linkler taranıyor...${NC}"
+  echo -e "  ${BOLD}$(L scanning_broken_links)${NC}"
   local scan_dirs=()
   [ -d "/usr/local/bin" ]    && scan_dirs+=("/usr/local/bin")
   [ -d "/opt/homebrew/bin" ] && scan_dirs+=("/opt/homebrew/bin")
@@ -1106,46 +1566,47 @@ clean_broken_symlinks_interactive() {
   done
 
   if [ "${#broken_links[@]}" -eq 0 ]; then
-    info "Kırık sembolik link bulunamadı."
+    info "$(L no_broken_links)"
     return
   fi
 
   echo ""
-  warn "Kırık sembolik linkler (${#broken_links[@]} adet):"
+  warn "$(L broken_links_count) (${#broken_links[@]}):"
   local link
   for link in ${broken_links[@]+"${broken_links[@]}"}; do
     printf "  ${DIM}  %s → %s${NC}\n" "$link" "$(readlink "$link" 2>/dev/null || echo '?')"
   done
   echo ""
 
-  if confirm "Tüm kırık sembolik linkler silinsin mi?"; then
+  if confirm "$(L delete_broken_q)"; then
     for link in ${broken_links[@]+"${broken_links[@]}"}; do
       rm -f "$link" 2>/dev/null && {
-        success "$(basename "$link") silindi"
+        success "$(basename "$link") $(L deleted)"
         TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
-      } || err "$(basename "$link") silinemedi"
+      } || err "$(basename "$link") $(L delete_failed)"
     done
   fi
 }
 
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# ─── Main Flow ───────────────────────────────────────────────────────────────
 category_selector() {
   echo ""
-  echo -e "  ${BOLD}Temizlenecek kategorileri seçin:${NC}"
+  echo -e "  ${BOLD}$(L select_categories)${NC}"
   echo ""
   local i
   for i in "${!CAT_IDS[@]}"; do
     local sz_h; sz_h=$(format_bytes "${CAT_SIZES[$i]}")
+    local display_name; display_name=$(cat_name "$i")
     local sudo_tag=""
     [ "${CAT_NEEDS_SUDO[$i]}" -eq 1 ] && sudo_tag=" ${DIM}[sudo]${NC}"
     if [ "${CAT_SIZES[$i]}" -gt 0 ]; then
-      printf "  ${GREEN}%d${NC}  %-26s  %s%b\n" "$((i+1))" "${CAT_NAMES[$i]}" "$sz_h" "$sudo_tag"
+      printf "  ${GREEN}%d${NC}  %-26s  %s%b\n" "$((i+1))" "$display_name" "$sz_h" "$sudo_tag"
     else
-      printf "  ${DIM}%d  %-26s  —%b${NC}\n" "$((i+1))" "${CAT_NAMES[$i]}" ""
+      printf "  ${DIM}%d  %-26s  —%b${NC}\n" "$((i+1))" "$display_name" ""
     fi
   done
   echo ""
-  echo -ne "  Numara girin (boşlukla, örn. 1 4 7 8) veya ${BOLD}all${NC} (sadece güvenli olanlar): "
+  echo -ne "  $(L enter_numbers) ${BOLD}all${NC} ($(L safe_only)): "
   local selection; read -r selection
   echo "$selection"
 }
@@ -1160,7 +1621,7 @@ run_clean() {
     local real_idx=$((idx - 1))
     if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#fn_map[@]}" ]; then
       if [ "${CAT_NEEDS_SUDO[$real_idx]}" -eq 1 ] && ! $SUDO_AVAILABLE; then
-        warn "${CAT_NAMES[$real_idx]} atlandı (sudo gerekli)."
+        warn "$(cat_name "$real_idx") $(L skipped) ($(L sudo_required))."
         continue
       fi
       "${fn_map[$real_idx]}"
@@ -1169,26 +1630,18 @@ run_clean() {
 }
 
 print_report() {
-  header "📋 Temizlik Raporu"
+  header "📋 $(L cleanup_report)"
   echo ""
   local freed_h; freed_h=$(format_bytes "$TOTAL_FREED")
-  echo -e "  ${GREEN}✅ Temizlik tamamlandı!${NC}"
+  echo -e "  ${GREEN}✅ $(L cleanup_done)${NC}"
   echo ""
-  printf "  ${BOLD}%-24s${NC} %s\n" "Kazanılan Alan:"   "$freed_h"
-  printf "  ${BOLD}%-24s${NC} %s\n" "Temizlenen Öğe:"  "$TOTAL_ITEMS"
-  printf "  ${BOLD}%-24s${NC} %s\n" "Mevcut Boş Alan:" "$(get_free_disk)"
+  printf "  ${BOLD}%-24s${NC} %s\n" "$(L space_freed)"   "$freed_h"
+  printf "  ${BOLD}%-24s${NC} %s\n" "$(L items_cleaned)"  "$TOTAL_ITEMS"
+  printf "  ${BOLD}%-24s${NC} %s\n" "$(L current_free)" "$(get_free_disk)"
   echo ""
 }
 
-# ─── JSON Çıktı Fonksiyonları (Web API) ──────────────────────────────────────
-json_escape_str() {
-  local s="$1"
-  s="${s//\\/\\\\}"
-  s="${s//\"/\\\"}"
-  s="${s//$'\n'/\\n}"
-  s="${s//$'\t'/\\t}"
-  echo "$s"
-}
+# ─── JSON Output Functions (Web API) ─────────────────────────────────────────
 
 scan_app_leftovers_subitems_json() {
   local first=true
@@ -1224,7 +1677,7 @@ scan_app_leftovers_subitems_json() {
   done < <(find "$HOME/Library/Application Support" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
 }
 
-# id, görünen ad, yol, risk → JSON alt-öğe satırı (LEADING virgüllü; yol yoksa hiçbir şey yazma)
+# Emit a developer sub-item JSON line (leading comma; skip if path doesn't exist)
 emit_dev_subitem() {
   local id="$1" name="$2" path="$3" risk="$4"
   [ -e "$path" ] || return 0
@@ -1263,8 +1716,8 @@ scan_developer_subitems_json() {
   done
   
   local s_sym=$((broken_count * 1024))
-  local sz_sym; sz_sym="$broken_count adet"
-  echo "        ,{\"id\": \"broken_links\", \"name\": \"Kırık Sembolik Linkler\", \"path\": \"\", \"size_bytes\": $s_sym, \"size_human\": \"$sz_sym\", \"is_orphaned\": true}"
+  local sz_sym; sz_sym="$broken_count items"
+  echo "        ,{\"id\": \"broken_links\", \"name\": \"Broken Symlinks\", \"path\": \"\", \"size_bytes\": $s_sym, \"size_human\": \"$sz_sym\", \"is_orphaned\": true}"
 
   # brew cache
   local brew_cache_path=""
@@ -1318,7 +1771,7 @@ scan_developer_subitems_json() {
     "$HOME/.gradle/caches" "caution"
   emit_dev_subitem "maven_repo" "Maven Repository" \
     "$HOME/.m2/repository" "caution"
-  echo "        ,{\"id\": \"simctl_unavailable\", \"name\": \"Erişilmez Simülatörleri Sil\", \"path\": \"\", \"size_bytes\": 0, \"size_human\": \"Eylem\", \"is_orphaned\": false}"
+  echo "        ,{\"id\": \"simctl_unavailable\", \"name\": \"Delete Unavailable Simulators\", \"path\": \"\", \"size_bytes\": 0, \"size_human\": \"Action\", \"is_orphaned\": false}"
 }
 
 scan_browser_full_subitems_json() {
@@ -1326,7 +1779,7 @@ scan_browser_full_subitems_json() {
   local d path s sz_h esc_id esc_path
   
   local browser_keys=("safari" "cookies" "chrome" "firefox" "brave" "edge" "opera" "arc")
-  local browser_names=("Safari" "Sistem Çerezleri" "Google Chrome" "Firefox" "Brave" "Microsoft Edge" "Opera" "Arc")
+  local browser_names=("Safari" "System Cookies" "Google Chrome" "Firefox" "Brave" "Microsoft Edge" "Opera" "Arc")
   local browser_paths=(
     "$HOME/Library/Safari"
     "$HOME/Library/Cookies"
@@ -1369,7 +1822,7 @@ scan_ios_backups_subitems_json() {
     s=$(get_size_bytes "$item") || s=0
     [ "$s" -le 0 ] && continue
     sz_h=$(format_bytes "$s")
-    mod_date=$(stat -f "%Sm" -t "%Y-%m-%d" "$item" 2>/dev/null || echo "Bilinmiyor")
+    mod_date=$(stat -f "%Sm" -t "%Y-%m-%d" "$item" 2>/dev/null || echo "Unknown")
     display_name="$base ($mod_date)"
     esc_base=$(json_escape_str "$base")
     esc_path=$(json_escape_str "$item")
@@ -1381,66 +1834,6 @@ scan_ios_backups_subitems_json() {
     fi
     echo -n "        {\"id\": \"$esc_base\", \"name\": \"$esc_name\", \"path\": \"$esc_path\", \"size_bytes\": $s, \"size_human\": \"$sz_h\", \"is_orphaned\": true}"
   done < <(find "$backup_dir" -maxdepth 1 -mindepth 1 -type d -print0 2>/dev/null | sort -z)
-}
-
-do_flush_dns() {
-  JSON_MODE=true
-  local ok=true
-  dscacheutil -flushcache 2>/dev/null || ok=false
-  killall -HUP mDNSResponder 2>/dev/null || ok=false
-  if $ok; then
-    printf '{"success":true,"message":"DNS önbelleği temizlendi."}\n'
-  else
-    printf '{"success":false,"error":"DNS temizleme başarısız."}\n'
-  fi
-}
-
-do_purge_ram() {
-  JSON_MODE=true
-  if purge 2>/dev/null; then
-    printf '{"success":true,"message":"RAM önbelleği temizlendi."}\n'
-  else
-    printf '{"success":false,"error":"RAM temizleme başarısız (sudo gerekebilir)."}\n'
-  fi
-}
-
-do_clean_launchagents() {
-  JSON_MODE=true
-  local removed=0
-  local errors=()
-  local dirs=(
-    "$HOME/Library/LaunchAgents"
-    "/Library/LaunchAgents"
-    "/Library/LaunchDaemons"
-  )
-  local d plist
-  for d in "${dirs[@]}"; do
-    [ -d "$d" ] || continue
-    while IFS= read -r -d '' plist; do
-      if ! plutil -lint "$plist" &>/dev/null; then
-        rm -f "$plist" 2>/dev/null && removed=$((removed + 1)) || errors+=("$plist")
-      fi
-    done < <(find "$d" -maxdepth 1 -name "*.plist" -print0 2>/dev/null)
-  done
-  printf '{"success":true,"removed":%d,"errors":%d}\n' "$removed" "${#errors[@]}"
-}
-
-do_thin_snapshots_json() {
-  JSON_MODE=true
-  local before after note="ok"
-  before=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c "com.apple.TimeMachine" || true)
-  [ -z "$before" ] && before=0
-  if [ "${APPLE_CLEANUP_DRYRUN:-0}" = "1" ]; then
-    note="dryrun"
-    after=$before
-  else
-    # 10GB hedef, urgency 4 (agresif). Yetki/snapshot yoksa sessiz başarısız.
-    tmutil thinLocalSnapshots / 10000000000 4 >/dev/null 2>&1 || note="yetki_yok_veya_snapshot_yok"
-    after=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c "com.apple.TimeMachine" || true)
-    [ -z "$after" ] && after=0
-  fi
-  printf '{"success":true,"snapshots_before":%s,"snapshots_after":%s,"note":"%s","disk_free":"%s"}\n' \
-    "$before" "$after" "$note" "$(get_free_disk)"
 }
 
 get_app_bundle_id() {
@@ -1498,6 +1891,80 @@ scan_mail_downloads_subitems_json() {
     done < <(find "$MAIL_DOWNLOADS_DIR" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
   fi
 }
+
+# ─── Special Action Handlers ────────────────────────────────────────────────
+
+do_flush_dns() {
+  JSON_MODE=true
+  local ok=true
+  dscacheutil -flushcache 2>/dev/null || ok=false
+  killall -HUP mDNSResponder 2>/dev/null || ok=false
+  if $ok; then
+    printf '{"success":true,"message":"%s"}\n' "$(L dns_flushed)"
+  else
+    printf '{"success":false,"error":"%s"}\n' "$(L dns_failed)"
+  fi
+}
+
+do_purge_ram() {
+  JSON_MODE=true
+  if purge 2>/dev/null; then
+    printf '{"success":true,"message":"%s"}\n' "$(L ram_purged)"
+  else
+    printf '{"success":false,"error":"%s"}\n' "$(L ram_failed)"
+  fi
+}
+
+do_clean_launchagents() {
+  JSON_MODE=true
+  local removed=0
+  local errors=()
+  local dirs=(
+    "$HOME/Library/LaunchAgents"
+    "/Library/LaunchAgents"
+    "/Library/LaunchDaemons"
+  )
+  local d plist
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    while IFS= read -r -d '' plist; do
+      if ! plutil -lint "$plist" &>/dev/null; then
+        rm -f "$plist" 2>/dev/null && removed=$((removed + 1)) || errors+=("$plist")
+      fi
+    done < <(find "$d" -maxdepth 1 -name "*.plist" -print0 2>/dev/null)
+  done
+  printf '{"success":true,"removed":%d,"errors":%d}\n' "$removed" "${#errors[@]}"
+}
+
+do_thin_snapshots_json() {
+  JSON_MODE=true
+  local before after note="ok"
+  before=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c "com.apple.TimeMachine" || true)
+  [ -z "$before" ] && before=0
+  if [ "${APPLE_CLEANUP_DRYRUN:-0}" = "1" ]; then
+    note="dryrun"
+    after=$before
+  else
+    tmutil thinLocalSnapshots / 10000000000 4 >/dev/null 2>&1 || note="no_permission_or_snapshots"
+    after=$(tmutil listlocalsnapshots / 2>/dev/null | grep -c "com.apple.TimeMachine" || true)
+    [ -z "$after" ] && after=0
+  fi
+  printf '{"success":true,"snapshots_before":%s,"snapshots_after":%s,"note":"%s","disk_free":"%s"}\n' \
+    "$before" "$after" "$note" "$(get_free_disk)"
+}
+
+do_spotlight_reindex() {
+  if ! $SUDO_AVAILABLE && [ "$(id -u)" -ne 0 ]; then
+    echo '{"success": false, "error": "Spotlight reindexing requires sudo privileges."}'
+    exit 1
+  fi
+  sudo mdutil -i off / >/dev/null 2>&1 || true
+  sudo mdutil -E / >/dev/null 2>&1 || true
+  sudo mdutil -i on / >/dev/null 2>&1 || true
+  printf '{"success": true, "status": "started", "message": "%s"}\n' "$(L spotlight_rebuild)"
+}
+
+# ─── JSON Scan ───────────────────────────────────────────────────────────────
 
 do_scan_json() {
   SUDO_AVAILABLE=false
@@ -1574,36 +2041,39 @@ ENDJSON
 ENDJSON
 }
 
+# ─── JSON Clean ──────────────────────────────────────────────────────────────
+
 do_clean_json() {
   local cats_csv="$1"
   SUDO_AVAILABLE=false
   JSON_MODE=true
 
-  # Kategori numaralarını parse et
-  local IFS_OLD="$IFS"
-  IFS=','
-  local cat_nums=($cats_csv)
-  IFS="$IFS_OLD"
+  # ── Robust comma parsing for category numbers ──
+  local cat_nums=()
+  IFS=',' read -ra cat_nums <<< "$cats_csv"
 
-  # Önce tarama yap
+  # Run scan first
   scan_all >/dev/null 2>&1
 
-  # Kayıtları resetle
+  # Reset counters
   TOTAL_FREED=0
   TOTAL_ITEMS=0
   CLEAN_RESULTS=()
 
-  # Gerçek kazanç ölçümü için temizlik öncesi boş alan (KB, available on /)
+  # Pre-clean free space measurement (KB, available on /)
   local df_before
   df_before=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
 
-  # Temizleme fonksiyon eşleşmesi
+  # Build clean function map
   local fn_map=()
   local _i
   for _i in "${!CAT_IDS[@]}"; do fn_map+=("$(cat_field "$_i" clean_fn)"); done
 
   local idx
-  for idx in ${cat_nums[@]+"${cat_nums[@]}"}; do
+  for idx in "${cat_nums[@]}"; do
+    # Trim whitespace
+    idx="${idx## }"; idx="${idx%% }"
+    [ -z "$idx" ] && continue
     local real_idx=$((idx - 1))
     if [ "$real_idx" -ge 0 ] && [ "$real_idx" -lt "${#fn_map[@]}" ]; then
       local fn="${fn_map[$real_idx]}"
@@ -1620,22 +2090,22 @@ do_clean_json() {
     fi
   done
 
-  # Temizlik sonrası boş alan; gerçek kazanç = df farkı (bayt)
+  # Post-clean free space; real gain = df delta (bytes)
   local df_after real_freed freed_source
   df_after=$(df -k / 2>/dev/null | awk 'NR==2 {print $4}')
   if [ -n "$df_before" ] && [ -n "$df_after" ]; then
     real_freed=$(( (df_after - df_before) * 1024 ))
-    [ "$real_freed" -lt 0 ] && real_freed=0   # başka süreçler veri yazmış olabilir
+    [ "$real_freed" -lt 0 ] && real_freed=0
     freed_source="df"
   else
-    real_freed=$TOTAL_FREED                    # df okunamadı → tahmine düş
+    real_freed=$TOTAL_FREED
     freed_source="estimated"
   fi
   local estimated_bytes=$TOTAL_FREED
   local freed_h; freed_h=$(format_bytes "$real_freed")
   local est_h; est_h=$(format_bytes "$estimated_bytes")
 
-  # JSON çıktı
+  # JSON output
   echo '{'
   echo '  "success": true,'
   echo "  \"freed_bytes\": $real_freed,"
@@ -1672,19 +2142,7 @@ do_status_json() {
 ENDJSON
 }
 
-do_spotlight_reindex() {
-  if ! $SUDO_AVAILABLE && [ "$(id -u)" -ne 0 ]; then
-    echo '{"success": false, "error": "Spotlight reindexing requires sudo privileges."}'
-    exit 1
-  fi
-  # Turn indexing off, erase index store, turn indexing back on
-  sudo mdutil -i off / >/dev/null 2>&1 || true
-  sudo mdutil -E / >/dev/null 2>&1 || true
-  sudo mdutil -i on / >/dev/null 2>&1 || true
-  echo '{"success": true, "status": "started", "message": "Spotlight indexing rebuilt successfully."}'
-}
-
-# ─── Ana Akış ────────────────────────────────────────────────────────────────
+# ─── Main ────────────────────────────────────────────────────────────────────
 main() {
   local args=("$@")
   local i=0
@@ -1692,6 +2150,10 @@ main() {
   
   while [ $i -lt ${#args[@]} ]; do
     case "${args[$i]}" in
+      --lang)
+        i=$((i + 1))
+        LANG_KEY="${args[$i]}"
+        ;;
       --scan-json)
         do_scan_json
         exit 0
@@ -1746,31 +2208,41 @@ main() {
         ;;
       --help|-h)
         echo ""
-        echo -e "${BOLD}clean_mac v${VERSION}${NC} — macOS Sistem Temizleyici (Güvenli Sürüm)"
+        echo -e "${BOLD}clean_mac v${VERSION}${NC} — $(L version_banner)"
         echo ""
-        echo "Kullanım: bash clean_mac.sh"
+        echo "Usage: bash clean_mac.sh [OPTIONS]"
         echo ""
-        echo -e "${BOLD}Kategoriler:${NC}"
-        echo "  1  Kullanıcı Cache       ~/Library/Caches/* (Tarayıcılar hariç)"
-        echo "  2  Sistem Cache          /Library/Caches/*          [sudo]"
-        echo "  3  Uygulama Kalıntıları  ~/Library/Application Support/ + Preferences"
-        echo "  4  Loglar                ~/Library/Logs/* + /Library/Logs/*"
-        echo "  5  Geçici Dosyalar       \$TMPDIR + user var/folders"
-        echo "  6  Geliştirici           Xcode DerivedData + kırık symlink'ler"
-        echo "  7  Çöp Kutusu            ~/.Trash/*"
-        echo "  8  Tarayıcı Cache        Tarayıcı önbellekleri (Güvenli)"
-        echo "  9  Tarayıcı Tüm Veri     Tarayıcı profilleri, çerezler [Oturumlar Kapanır!]"
+        echo -e "${BOLD}Categories:${NC}"
+        local ci
+        for ci in "${!CAT_IDS[@]}"; do
+          local dn; dn=$(cat_name "$ci")
+          local st=""
+          [ "${CAT_NEEDS_SUDO[$ci]}" -eq 1 ] && st=" [sudo]"
+          printf "  %-3d  %s%s\n" "$((ci+1))" "$dn" "$st"
+        done
         echo ""
         echo -e "${BOLD}Web API:${NC}"
-        echo "  --scan-json              Tarama sonuçlarını JSON döner"
-        echo "  --clean-json 1,3,7       Belirtilen kategorileri temizler, JSON döner"
-        echo "  --app-leftovers 'd1,d2'  Silinecek kalıntı klasör isimleri"
-        echo "  --browser-full-sub 'c,s' Sıfırlanacak tarayıcı kodları (chrome, safari...)"
-        echo "  --developer-sub 'd,b'    Xcode DerivedData (derived_data) veya Kırık Symlinkler (broken_links)"
-        echo "  --status-json            Sistem bilgisini JSON döner"
-        echo "  --thin-snapshots-json    Yerel snapshot'ları inceltir, JSON döner"
+        echo "  --scan-json              Scan results as JSON"
+        echo "  --clean-json 1,3,7       Clean specified categories, return JSON"
+        echo "  --app-leftovers 'd1,d2'  Leftover folder names to delete"
+        echo "  --browser-full-sub 'c,s' Browser keys to reset (chrome, safari...)"
+        echo "  --developer-sub 'd,b'    Developer sub-items (derived_data, broken_links...)"
+        echo "  --ios-backups-sub 'u1,u2' iOS backup UUIDs to delete"
+        echo "  --app-uninstaller-sub 'a' Apps to uninstall"
+        echo "  --status-json            System status as JSON"
+        echo "  --thin-snapshots-json    Thin local TM snapshots, return JSON"
+        echo "  --flush-dns              Flush DNS cache"
+        echo "  --purge-ram              Purge RAM cache"
+        echo "  --launchagents-clean     Clean invalid LaunchAgents"
+        echo "  --spotlight-reindex      Rebuild Spotlight index"
+        echo "  --lang en|tr             Set UI language (default: tr)"
         echo ""
-        echo "Not: Downloads klasörüne dokunulmaz."
+        echo "Env vars:"
+        echo "  APPLE_CLEANUP_LANG       UI language (tr|en)"
+        echo "  APPLE_CLEANUP_FORCE_RM   Set to 1 to bypass trash-first (CI/testing)"
+        echo "  APPLE_CLEANUP_DRYRUN     Set to 1 for dry-run mode"
+        echo ""
+        echo "Note: Downloads folder is never touched."
         echo ""
         exit 0
         ;;
@@ -1778,43 +2250,42 @@ main() {
     i=$((i + 1))
   done
 
-  # Eğer clean_csv argümanı yakalandıysa JSON modda çalıştır
+  # If clean_csv was captured, run in JSON mode
   if [ -n "$clean_csv" ]; then
     do_clean_json "$clean_csv"
     exit 0
   fi
 
-  # Terminal İnteraktif Mod
+  # Terminal Interactive Mode
   clear
-  header "🍎 clean_mac v${VERSION} — macOS Sistem Temizleyici"
+  header "🍎 clean_mac v${VERSION} — $(L version_banner)"
   echo ""
   echo -e "  macOS     : $(sw_vers -productVersion 2>/dev/null || echo '?')"
-  echo -e "  Kullanıcı : $(whoami)"
-  echo -e "  Tarih     : $(date '+%Y-%m-%d %H:%M:%S')"
+  echo -e "  User      : $(whoami)"
+  echo -e "  Date      : $(date '+%Y-%m-%d %H:%M:%S')"
   echo ""
-  info "Bu betik ÖNCE tarar, silmeden önce onayınızı ister."
-  warn "Kritik sistem dosyaları ve aktif uygulama oturumları korunur."
+  info "$(L scan_first)"
+  warn "$(L critical_protected)"
   echo ""
 
   sudo_check
   scan_all
   print_scan_table
 
-  echo -e "  ${BOLD}Ne yapmak istersiniz?${NC}"
+  echo -e "  ${BOLD}$(L what_to_do)${NC}"
   echo ""
-  echo -e "  ${GREEN}1${NC}  Sadece Kesinlikle Güvenli Dosyaları Hızlı Temizle (Önbellek, Log, Temp, Sepet vb.)"
-  echo -e "  ${GREEN}2${NC}  Kategori Seçerek Temizle (Uygulama Ayarları / Tarayıcı Oturumları Seçmeli)"
-  echo -e "  ${RED}3${NC}  İptal"
+  echo -e "  ${GREEN}1${NC}  $(L quick_clean)"
+  echo -e "  ${GREEN}2${NC}  $(L selective_clean)"
+  echo -e "  ${RED}3${NC}  $(L cancel)"
   echo ""
-  echo -ne "  Seçiminiz [1/2/3]: "
+  echo -ne "  $(L your_choice) [1/2/3]: "
   local choice; read -r choice
 
   case "$choice" in
     1)
       echo ""
-      warn "Kesinlikle güvenli kategoriler (Önbellek, Log, Temp, Çöp Kutusu, Tarayıcı Caches) temizlenecek."
-      confirm "Devam etmek istiyor musunuz?" || { echo ""; info "İptal edildi."; exit 0; }
-      # Sadece güvenli kategorileri çalıştır: 1, 2 (varsa sudo), 4, 5, 7, 8
+      warn "$(L safe_clean_info)"
+      confirm "$(L continue_prompt)" || { echo ""; info "$(L cancelled)"; exit 0; }
       run_clean 1 2 4 5 7 8
       ;;
     2)
@@ -1826,16 +2297,16 @@ main() {
         read -ra selected_nums <<< "$raw_selection"
       fi
       if [ "${#selected_nums[@]}" -eq 0 ]; then
-        info "Seçim yapılmadı. İptal edildi."
+        info "$(L no_selection)"
         exit 0
       fi
       echo ""
-      confirm "Seçilen kategoriler temizlensin mi?" || { info "İptal edildi."; exit 0; }
+      confirm "$(L selected_clean_q)" || { info "$(L cancelled)"; exit 0; }
       run_clean "${selected_nums[@]}"
       ;;
     *)
       echo ""
-      info "İptal edildi."
+      info "$(L cancelled)"
       exit 0
       ;;
   esac
