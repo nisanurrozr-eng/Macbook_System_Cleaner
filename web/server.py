@@ -12,21 +12,88 @@ Security features:
   - Boolean normalization for scan JSON fields
 """
 
+import hmac
 import http.server
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import urllib.parse
 from pathlib import Path
 
+# Bind to loopback only — this API can delete files and must never be
+# reachable from the local network.
+HOST = "127.0.0.1"
 PORT = 8080
 WEB_DIR = Path(__file__).parent.resolve()
 SCRIPT_PATH = (WEB_DIR.parent / "clean_mac.sh").resolve()
 
 # Maximum allowed request body size (1 MB)
 MAX_BODY_SIZE = 1 * 1024 * 1024  # 1,048,576 bytes
+
+# Per-process CSRF/session token. Regenerated on every server start and
+# embedded into the served index.html; destructive endpoints require it.
+SESSION_TOKEN = secrets.token_urlsafe(32)
+TOKEN_PLACEHOLDER = "__CLEANUP_TOKEN__"
+
+# Loopback host names accepted in the Host / Origin headers. Anything else is
+# rejected to defeat DNS-rebinding attacks against the loopback binding.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "ip6-localhost"})
+
+
+def _host_only(value: str) -> str:
+    """Strip scheme, port and IPv6 brackets, returning the bare host."""
+    if not value:
+        return ""
+    # Drop scheme (http://host) if present
+    if "://" in value:
+        value = value.split("://", 1)[1]
+    value = value.strip().rstrip("/")
+    # Bracketed IPv6 literal, optionally with :port
+    if value.startswith("["):
+        return value[1:].split("]", 1)[0]
+    # host:port — split on the last colon only if it looks like a port
+    if value.count(":") == 1:
+        value = value.split(":", 1)[0]
+    return value
+
+
+def _is_allowed_host(host_header: str) -> bool:
+    """True if the Host header points at a loopback address."""
+    return _host_only(host_header) in _LOOPBACK_HOSTS
+
+
+def _is_allowed_origin(origin_header) -> bool:
+    """
+    True if the Origin header is absent (non-browser client) or points at a
+    loopback address. Blocks cross-site requests from real web pages.
+    """
+    if not origin_header:
+        return True
+    if origin_header == "null":
+        return False
+    return _host_only(origin_header) in _LOOPBACK_HOSTS
+
+
+def _extra_env_for_clean(payload: dict) -> dict:
+    """
+    Derive environment overrides for a clean request. Currently exposes the
+    dry-run preview mode. Requires a real boolean True (not a truthy string)
+    so a stray field can never silently disable real cleaning or enable it.
+    """
+    env = {}
+    if isinstance(payload, dict) and payload.get("dry_run") is True:
+        env["APPLE_CLEANUP_DRYRUN"] = "1"
+    return env
+
+
+def _token_matches(token) -> bool:
+    """Constant-time comparison of a supplied token against the session token."""
+    if not token or not isinstance(token, str):
+        return False
+    return hmac.compare_digest(token, SESSION_TOKEN)
 
 MIME_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -128,23 +195,43 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write(f"[server] {fmt % args}\n")
 
-    # ── CORS ────────────────────────────────────────────────
-    def _cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+    # ── Security headers ────────────────────────────────────
+    def _security_headers(self):
+        # No wildcard CORS: the dashboard is served same-origin, so cross-origin
+        # reads must stay blocked. These headers harden the responses further.
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
 
     def do_OPTIONS(self):
+        # Same-origin only; no CORS preflight is honoured.
         self.send_response(204)
-        self._cors_headers()
+        self._security_headers()
         self.end_headers()
+
+    def _require_loopback_host(self) -> bool:
+        """Reject requests whose Host header is not a loopback address."""
+        if _is_allowed_host(self.headers.get("Host", "")):
+            return True
+        self._send_error_json("Forbidden host", 403)
+        return False
+
+    def _require_csrf(self) -> bool:
+        """Enforce Origin and session-token checks on state-changing requests."""
+        if not _is_allowed_origin(self.headers.get("Origin")):
+            self._send_error_json("Cross-origin request blocked", 403)
+            return False
+        if not _token_matches(self.headers.get("X-Cleanup-Token")):
+            self._send_error_json("Missing or invalid session token", 403)
+            return False
+        return True
 
     # ── Helpers ─────────────────────────────────────────────
     def _send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self._cors_headers()
+        self._security_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -188,9 +275,12 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
 
         return payload, None
 
-    def _run_script(self, args, timeout=120):
+    def _run_script(self, args, timeout=120, env_extra=None):
         """Run clean_mac.sh with given arguments and return parsed JSON."""
         cmd = ["bash", str(SCRIPT_PATH)] + args
+        run_env = dict(os.environ)
+        if env_extra:
+            run_env.update(env_extra)
         try:
             result = subprocess.run(
                 cmd,
@@ -198,6 +288,7 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
                 text=True,
                 timeout=timeout,
                 cwd=str(SCRIPT_PATH.parent),
+                env=run_env,
             )
             output = result.stdout.strip()
             if not output:
@@ -219,6 +310,8 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
 
     # ── Routes ──────────────────────────────────────────────
     def do_GET(self):
+        if not self._require_loopback_host():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
 
@@ -231,6 +324,10 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             self._serve_static(path)
 
     def do_POST(self):
+        if not self._require_loopback_host():
+            return
+        if not self._require_csrf():
+            return
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/clean":
             self._handle_clean()
@@ -328,7 +425,7 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
             if safe:
                 args += ["--app-uninstaller-sub", ",".join(safe)]
 
-        data, err = self._run_script(args)
+        data, err = self._run_script(args, env_extra=_extra_env_for_clean(payload))
         if err:
             self._send_error_json(f"Clean error: {err}")
         else:
@@ -376,8 +473,9 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
 
         file_path = (WEB_DIR / path.lstrip("/")).resolve()
 
-        # Security: prevent directory traversal
-        if not str(file_path).startswith(str(WEB_DIR)):
+        # Security: prevent directory traversal. Compare against the resolved
+        # web dir using path semantics so a sibling like "<dir>_evil" can't pass.
+        if file_path != WEB_DIR and WEB_DIR not in file_path.parents:
             self._send_error_json("Forbidden", 403)
             return
 
@@ -390,11 +488,18 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
 
         try:
             data = file_path.read_bytes()
+            # Inject the per-session token into the dashboard so the frontend
+            # can authenticate destructive requests.
+            if file_path.name == "index.html":
+                data = data.replace(
+                    TOKEN_PLACEHOLDER.encode("utf-8"),
+                    SESSION_TOKEN.encode("utf-8"),
+                )
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-cache")
-            self._cors_headers()
+            self._security_headers()
             self.end_headers()
             self.wfile.write(data)
         except Exception as e:
@@ -403,9 +508,9 @@ class CleanupHandler(http.server.BaseHTTPRequestHandler):
 
 def main():
     http.server.HTTPServer.allow_reuse_address = True
-    server = http.server.HTTPServer(("0.0.0.0", PORT), CleanupHandler)
+    server = http.server.HTTPServer((HOST, PORT), CleanupHandler)
     print(f"🍎 Apple Cleanup Dashboard v2.0.0")
-    print(f"   http://localhost:{PORT}")
+    print(f"   http://localhost:{PORT}  (loopback only)")
     print(f"   Press Ctrl+C to stop\n")
     try:
         server.serve_forever()

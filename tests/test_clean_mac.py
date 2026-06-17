@@ -102,6 +102,66 @@ def test_clean_json_reports_real_and_estimated(tmp_path):
     assert data["freed_bytes"] >= 0    # negatif kıstırılmış
 
 
+def test_dry_run_previews_without_deleting(tmp_path):
+    # user_cache (index 1) holds a 2MB blob; dry-run must report it as an
+    # estimate but leave the file untouched on disk.
+    blob = tmp_path / "Library/Caches/com.example.app/blob.bin"
+    make_dir_with_bytes(blob.parent, kb=2048)
+    env = dict(os.environ, HOME=str(tmp_path), APPLE_CLEANUP_DRYRUN="1")
+    out = subprocess.run(
+        ["bash", str(SCRIPT), "--clean-json", "1"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    data = json.loads(out.stdout)
+    assert data["dry_run"] is True
+    assert data["estimated_bytes"] > 0
+    # File must still exist — nothing was actually removed.
+    assert blob.exists(), "dry-run must not delete files"
+
+
+def test_clean_json_reports_dry_run_flag(tmp_path):
+    data = run_clean(tmp_path, "4")  # normal run
+    assert data["dry_run"] is False
+
+
+def test_exclusion_list_protects_path(tmp_path):
+    caches = tmp_path / "Library/Caches"
+    keep = caches / "keep.app"
+    drop = caches / "drop.app"
+    make_dir_with_bytes(keep, kb=512)
+    make_dir_with_bytes(drop, kb=512)
+    env = dict(os.environ, HOME=str(tmp_path), APPLE_CLEANUP_FORCE_RM="1",
+               APPLE_CLEANUP_EXCLUDE=str(keep))
+    out = subprocess.run(
+        ["bash", str(SCRIPT), "--clean-json", "1"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    # clean_user_cache clears each cache dir's contents; the excluded dir's
+    # payload must survive while the non-excluded one is removed.
+    assert (keep / "blob.bin").exists(), "excluded path must survive cleaning"
+    assert not (drop / "blob.bin").exists(), "non-excluded path should be removed"
+
+
+def test_app_uninstaller_unknown_app_is_safe(tmp_path):
+    # An app not present in /Applications resolves to an empty bundle id.
+    # The cleaner must NEVER fall back to deleting whole Library subdirs
+    # (e.g. ~/Library/Containers) when the bundle id is empty.
+    keep = tmp_path / "Library/Containers/keepme"
+    keep.mkdir(parents=True)
+    (keep / "data").write_bytes(b"x" * 1024)
+    env = dict(os.environ, HOME=str(tmp_path), APPLE_CLEANUP_FORCE_RM="1")
+    out = subprocess.run(
+        ["bash", str(SCRIPT), "--clean-json", "11",
+         "--app-uninstaller-sub", "ZzNoSuchApp"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    assert out.returncode == 0, out.stderr
+    assert (tmp_path / "Library/Containers/keepme/data").exists(), \
+        "empty bundle id must not delete Library subdirectories"
+
+
 def test_developer_subitems_include_new_caches(tmp_path):
     # Gradle cache fixture → developer subitems içinde gradle_cache görünmeli
     make_dir_with_bytes(tmp_path / ".gradle/caches/modules", kb=2048)

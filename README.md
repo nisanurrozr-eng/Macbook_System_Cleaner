@@ -117,6 +117,20 @@ bash clean_mac.sh --status-json
 - The `Downloads` folder is not touched.
 - System Cache cleanup requires `sudo` (terminal mode).
 - The web dashboard skips categories that require `sudo` unless explicitly enabled.
+- **Dry-run preview:** set `APPLE_CLEANUP_DRYRUN=1` (or tick *Önizleme* in the
+  dashboard) to see exactly what would be removed — nothing is deleted.
+- **Exclusion list:** set `APPLE_CLEANUP_EXCLUDE` to a colon-separated list of
+  paths/globs to protect from deletion, e.g.
+  `APPLE_CLEANUP_EXCLUDE="$HOME/Library/Caches/com.myapp:*/Important*"`.
+
+## 🔒 Web Dashboard Security
+
+The dashboard exposes an API that can delete files, so it is locked down:
+
+- Binds to **loopback only** (`127.0.0.1`) — never reachable from the LAN.
+- Rejects requests whose `Host`/`Origin` is not loopback (anti DNS-rebinding/CSRF).
+- Requires a **per-session token** (regenerated on each start) on every
+  destructive request; no wildcard CORS is sent.
 
 ---
 

@@ -130,6 +130,7 @@
 
     btnScan:       $('#btnScan'),
     btnClean:      $('#btnClean'),
+    dryRunToggle:  $('#dryRunToggle'),
     btnSelectAll:  $('#btnSelectAll'),
     btnSelectNone: $('#btnSelectNone'),
 
@@ -335,12 +336,19 @@
   /* ──────────────────────────────────────────────────────────
      API + mock
      ────────────────────────────────────────────────────────── */
+  const CLEANUP_TOKEN =
+    document.querySelector('meta[name="cleanup-token"]')?.content || '';
+
   async function apiFetch(url, options = {}) {
     if (useMock) return mockApi(url, options);
     try {
       const res = await fetch(url, {
-        headers: { 'Content-Type': 'application/json' },
         ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Cleanup-Token': CLEANUP_TOKEN,
+          ...(options.headers || {}),
+        },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -742,8 +750,10 @@
     termLog(`Temizlik başlatılıyor (${selected.length} kategori)…`, 'info');
 
     try {
+      const dryRun = !!(el.dryRunToggle && el.dryRunToggle.checked);
       const payload = {
         categories: selected,
+        dry_run: dryRun,
         app_leftovers_selected: getSelectedSubitems('app_leftovers'),
         browser_full_selected: getSelectedSubitems('browser_full'),
         developer_selected: getSelectedSubitems('developer'),
@@ -757,8 +767,13 @@
 
       el.resultsPanel.hidden = false;
       el.resultsPanel.classList.remove('error');
-      el.resultsTitle.textContent = 'Temizlik tamamlandı';
-      const freedText = data.freed_human || formatBytes(data.freed_bytes || 0);
+      el.resultsTitle.textContent = data.dry_run
+        ? 'Önizleme (hiçbir şey silinmedi)'
+        : 'Temizlik tamamlandı';
+      // In dry-run the disk delta is 0, so show the estimate as the headline.
+      const freedText = data.dry_run
+        ? (data.estimated_human || formatBytes(data.estimated_bytes || 0))
+        : (data.freed_human || formatBytes(data.freed_bytes || 0));
       el.resultsFreed.textContent = freedText;
       const subParts = [`${data.items_cleaned || selected.length} kategori`,
                         `Yeni boş alan ${data.disk_free || '—'}`];

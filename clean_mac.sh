@@ -61,6 +61,10 @@ L() {
     en::deleted)              echo "deleted" ;;
     tr::trashed)              echo "çöpe taşındı" ;;
     en::trashed)              echo "moved to trash" ;;
+    tr::would_remove)         echo "kaldırılacaktı (deneme)" ;;
+    en::would_remove)         echo "would remove (dry-run)" ;;
+    tr::excluded)             echo "hariç tutuldu (korumalı)" ;;
+    en::excluded)             echo "excluded (protected)" ;;
     tr::delete_failed)        echo "silinemedi" ;;
     en::delete_failed)        echo "could not be deleted" ;;
     tr::empty_path)           echo "Boş path, atlanıyor" ;;
@@ -328,6 +332,29 @@ CLEAN_RESULTS=()
 # When set to 1, bypass trash-first and use rm -rf directly (for CI/testing)
 FORCE_RM="${APPLE_CLEANUP_FORCE_RM:-0}"
 
+# When set to 1, preview only: report what WOULD be removed without deleting.
+DRYRUN="${APPLE_CLEANUP_DRYRUN:-0}"
+
+# User exclusion list: colon-separated paths/globs that must never be deleted.
+# A pattern protects the path itself and everything beneath it.
+EXCLUDE_RAW="${APPLE_CLEANUP_EXCLUDE:-}"
+
+_is_excluded() {
+  local path="$1"
+  [ -n "$EXCLUDE_RAW" ] || return 1
+  local oldIFS="$IFS"; IFS=':'
+  local pat
+  for pat in $EXCLUDE_RAW; do
+    [ -n "$pat" ] || continue
+    # Unquoted $pat in case enables glob matching; $pat/* covers descendants.
+    case "$path" in
+      $pat|$pat/*) IFS="$oldIFS"; return 0 ;;
+    esac
+  done
+  IFS="$oldIFS"
+  return 1
+}
+
 # JSON mode sub-item lists (comma-separated, parsed via IFS read -ra)
 APP_LEFTOVERS_CLEAN=""
 BROWSER_FULL_CLEAN=""
@@ -564,9 +591,20 @@ safe_rm() {
     /System/*|/usr/*|/bin/*|/sbin/*|/etc/*|/private/etc/*)
       err "$(L protected_path): $path"; return 1 ;;
   esac
+  if _is_excluded "$path"; then
+    info "$(L excluded): $label"
+    return 0
+  fi
   [ -e "$path" ] || return 0
   local sz_b; sz_b=$(get_size_bytes "$path")
   local sz_h; sz_h=$(format_bytes "$sz_b")
+
+  if [ "$DRYRUN" = "1" ]; then
+    success "$label: ${BOLD}${sz_h}${NC} $(L would_remove)"
+    TOTAL_FREED=$((TOTAL_FREED + sz_b))
+    TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+    return 0
+  fi
 
   if _should_force_rm "$_CURRENT_NEEDS_SUDO" "$_CURRENT_IS_TRASH_EMPTY"; then
     # Direct rm -rf (sudo paths, trash emptying, or CI mode)
@@ -603,9 +641,26 @@ safe_rm_contents() {
   case "$path" in
     /System/*|/usr/*|/bin/*|/sbin/*|/etc/*|/private/etc/*) err "$(L protected_path): $path"; return 1 ;;
   esac
+  # Exclusion-aware mode: when the user defined protected paths, delete each
+  # child individually (via safe_rm, which honors excludes + dry-run) so a
+  # protected item inside the directory is never swept away by a bulk rm.
+  if [ -n "$EXCLUDE_RAW" ]; then
+    local child
+    while IFS= read -r -d '' child; do
+      safe_rm "$child" "$child"
+    done < <(find "$path" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
+    return 0
+  fi
   local sz_b; sz_b=$(get_dir_size_bytes "$path")
   [ "$sz_b" -le 0 ] 2>/dev/null && return 0
   local sz_h; sz_h=$(format_bytes "$sz_b")
+
+  if [ "$DRYRUN" = "1" ]; then
+    success "$label: ${BOLD}${sz_h}${NC} $(L would_remove)"
+    TOTAL_FREED=$((TOTAL_FREED + sz_b))
+    TOTAL_ITEMS=$((TOTAL_ITEMS + 1))
+    return 0
+  fi
 
   if _should_force_rm "$_CURRENT_NEEDS_SUDO" "$_CURRENT_IS_TRASH_EMPTY"; then
     # Direct rm -rf (sudo paths, trash emptying, or CI mode)
@@ -1229,19 +1284,19 @@ clean_app_uninstaller() {
           ;;
       esac
       local app_path="/Applications/$app_name.app"
+      # Resolve the real bundle id from Info.plist BEFORE deleting the .app,
+      # so leftovers keyed by bundle id can still be located afterwards.
+      local bundle_id=""
       if [ -d "$app_path" ]; then
+        bundle_id=$(get_app_bundle_id "$app_path")
         safe_rm "$app_path" "App: $app_name"
       fi
       local dir
-      for dir in \
-          "$HOME/Library/Application Support/$app_name" \
-          "$HOME/Library/Caches/$app_name" \
-          "$HOME/Library/Preferences/com.${app_name}.plist" \
-          "$HOME/Library/Saved Application State/${app_name}.savedState"; do
+      while IFS= read -r -d '' dir; do
         if [ -e "$dir" ]; then
           safe_rm "$dir" "Leftover: $dir"
         fi
-      done
+      done < <(app_leftover_paths "$app_name" "$bundle_id")
     done
     return
   fi
@@ -1840,7 +1895,34 @@ get_app_bundle_id() {
   local app_path="$1"
   local plist="$app_path/Contents/Info.plist"
   [ -f "$plist" ] || { echo ""; return; }
-  /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null || echo ""
+  local bid
+  bid=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null) || bid=""
+  # Only accept a sane reverse-DNS-style id; reject anything that could
+  # widen a leftover path (slashes, dot-dot, spaces, empty).
+  case "$bid" in
+    ""|*/*|*..*|*" "*) echo "" ;;
+    *) echo "$bid" ;;
+  esac
+}
+
+# Emit the canonical leftover-path candidates for an app, NUL-separated.
+# Shared by scan + clean so the two can never drift. Bundle-id-derived paths
+# are emitted ONLY when a valid bundle id is known, so an empty id can never
+# collapse to a whole Library subdirectory (e.g. ~/Library/Containers).
+# Args: $1 = app_name, $2 = bundle_id (may be empty)
+app_leftover_paths() {
+  local app_name="$1" bundle_id="$2"
+  [ -n "$app_name" ] || return 0
+  printf '%s\0' "$HOME/Library/Application Support/$app_name"
+  printf '%s\0' "$HOME/Library/Caches/$app_name"
+  printf '%s\0' "$HOME/Library/Logs/$app_name"
+  if [ -n "$bundle_id" ]; then
+    printf '%s\0' "$HOME/Library/Caches/$bundle_id"
+    printf '%s\0' "$HOME/Library/Containers/$bundle_id"
+    printf '%s\0' "$HOME/Library/HTTPStorages/$bundle_id"
+    printf '%s\0' "$HOME/Library/Preferences/${bundle_id}.plist"
+    printf '%s\0' "$HOME/Library/Saved Application State/${bundle_id}.savedState"
+  fi
 }
 
 scan_app_uninstaller_subitems_json() {
@@ -1851,15 +1933,11 @@ scan_app_uninstaller_subitems_json() {
     bundle_id=$(get_app_bundle_id "$app")
     leftover_total=0
     local dir
-    for dir in \
-        "$HOME/Library/Application Support/$app_name" \
-        "$HOME/Library/Caches/$app_name" \
-        "$HOME/Library/Preferences/${bundle_id}.plist" \
-        "$HOME/Library/Saved Application State/${bundle_id}.savedState"; do
+    while IFS= read -r -d '' dir; do
       [ -e "$dir" ] || continue
       s=$(get_size_bytes "$dir") || s=0
       leftover_total=$((leftover_total + s))
-    done
+    done < <(app_leftover_paths "$app_name" "$bundle_id")
     sz_h=$(format_bytes "$leftover_total")
     esc_name=$(json_escape_str "$app_name")
     esc_bundle=$(json_escape_str "$bundle_id")
@@ -2052,8 +2130,8 @@ do_clean_json() {
   local cat_nums=()
   IFS=',' read -ra cat_nums <<< "$cats_csv"
 
-  # Run scan first
-  scan_all >/dev/null 2>&1
+  # Run scan first (never let a non-zero scan abort JSON emission)
+  scan_all >/dev/null 2>&1 || true
 
   # Reset counters
   TOTAL_FREED=0
@@ -2106,8 +2184,11 @@ do_clean_json() {
   local est_h; est_h=$(format_bytes "$estimated_bytes")
 
   # JSON output
+  local dry_run_json="false"
+  [ "$DRYRUN" = "1" ] && dry_run_json="true"
   echo '{'
   echo '  "success": true,'
+  echo "  \"dry_run\": $dry_run_json,"
   echo "  \"freed_bytes\": $real_freed,"
   echo "  \"freed_human\": \"$freed_h\","
   echo "  \"estimated_bytes\": $estimated_bytes,"
@@ -2240,7 +2321,8 @@ main() {
         echo "Env vars:"
         echo "  APPLE_CLEANUP_LANG       UI language (tr|en)"
         echo "  APPLE_CLEANUP_FORCE_RM   Set to 1 to bypass trash-first (CI/testing)"
-        echo "  APPLE_CLEANUP_DRYRUN     Set to 1 for dry-run mode"
+        echo "  APPLE_CLEANUP_DRYRUN     Set to 1 to preview only (deletes nothing)"
+        echo "  APPLE_CLEANUP_EXCLUDE    Colon-separated paths/globs to protect"
         echo ""
         echo "Note: Downloads folder is never touched."
         echo ""

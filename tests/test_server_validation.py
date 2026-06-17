@@ -92,5 +92,80 @@ class TestValidateAppName(unittest.TestCase):
         self.assertFalse(self.v(""))
 
 
+class TestAllowedHost(unittest.TestCase):
+    def setUp(self):
+        from server import _is_allowed_host
+        self.v = _is_allowed_host
+
+    def test_allows_loopback(self):
+        self.assertTrue(self.v("localhost"))
+        self.assertTrue(self.v("localhost:8080"))
+        self.assertTrue(self.v("127.0.0.1"))
+        self.assertTrue(self.v("127.0.0.1:8080"))
+        self.assertTrue(self.v("[::1]"))
+        self.assertTrue(self.v("[::1]:8080"))
+
+    def test_blocks_external_hosts(self):
+        self.assertFalse(self.v("example.com"))
+        self.assertFalse(self.v("192.168.1.20:8080"))
+        self.assertFalse(self.v("evil.attacker.test"))
+
+    def test_blocks_empty(self):
+        self.assertFalse(self.v(""))
+
+
+class TestAllowedOrigin(unittest.TestCase):
+    def setUp(self):
+        from server import _is_allowed_origin
+        self.v = _is_allowed_origin
+
+    def test_absent_origin_allowed(self):
+        # curl / native clients omit Origin; allowed (token + Host still guard)
+        self.assertTrue(self.v(None))
+        self.assertTrue(self.v(""))
+
+    def test_loopback_origin_allowed(self):
+        self.assertTrue(self.v("http://localhost:8080"))
+        self.assertTrue(self.v("http://127.0.0.1:8080"))
+        self.assertTrue(self.v("http://[::1]:8080"))
+
+    def test_external_origin_blocked(self):
+        self.assertFalse(self.v("http://evil.example.com"))
+        self.assertFalse(self.v("https://attacker.test"))
+        self.assertFalse(self.v("null"))
+
+
+class TestExtraEnvForClean(unittest.TestCase):
+    def setUp(self):
+        from server import _extra_env_for_clean
+        self.f = _extra_env_for_clean
+
+    def test_dry_run_true_sets_env(self):
+        self.assertEqual(self.f({"dry_run": True}),
+                         {"APPLE_CLEANUP_DRYRUN": "1"})
+
+    def test_dry_run_absent_or_false_empty(self):
+        self.assertEqual(self.f({}), {})
+        self.assertEqual(self.f({"dry_run": False}), {})
+        # Only a real boolean True enables it (no truthy strings)
+        self.assertEqual(self.f({"dry_run": "true"}), {})
+        self.assertEqual(self.f({"dry_run": 1}), {})
+
+
+class TestTokenCompare(unittest.TestCase):
+    def setUp(self):
+        from server import _token_matches, SESSION_TOKEN
+        self.v = _token_matches
+        self.token = SESSION_TOKEN
+
+    def test_matches_correct_token(self):
+        self.assertTrue(self.v(self.token))
+
+    def test_rejects_wrong_token(self):
+        self.assertFalse(self.v("wrong"))
+        self.assertFalse(self.v(None))
+        self.assertFalse(self.v(""))
+
+
 if __name__ == "__main__":
     unittest.main()
