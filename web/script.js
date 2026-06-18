@@ -168,6 +168,8 @@
   let scanData = null;
   let isLoading = false;
   let termLineCount = 0;
+  const filesSelected = new Set();   // rowIds selected in the Dosyalar tab
+  let filesQuery = '';               // current Dosyalar search query
   const accentByKey = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.color]));
 
   /* ──────────────────────────────────────────────────────────
@@ -437,6 +439,7 @@
     try {
       const data = await apiFetch('/api/scan');
       scanData = data;
+      filesSelected.clear();   // a fresh scan invalidates prior file selections
 
       if (data.disk_free) el.sysDiskFree.textContent = data.disk_free;
       if (data.macos_version) el.sysVersion.textContent = data.macos_version;
@@ -1037,33 +1040,111 @@
      ────────────────────────────────────────────────────────── */
   const tabCleanup = $('#tab-cleanup');
   const tabUninstaller = $('#tab-uninstaller');
+  const tabFiles = $('#tab-files');
   const cleanupTabContent = $('#cleanupTabContent');
   const uninstallerTabContent = $('#uninstallerTabContent');
+  const filesTabContent = $('#filesTabContent');
   const appsSearch = $('#appsSearch');
 
   let allApplications = [];
 
   function showTab(tabId) {
-    if (tabId === 'cleanup') {
-      tabCleanup.classList.add('active');
-      tabCleanup.setAttribute('aria-selected', 'true');
-      tabUninstaller.classList.remove('active');
-      tabUninstaller.setAttribute('aria-selected', 'false');
-      cleanupTabContent.hidden = false;
-      uninstallerTabContent.hidden = true;
-    } else {
-      tabCleanup.classList.remove('active');
-      tabCleanup.setAttribute('aria-selected', 'false');
-      tabUninstaller.classList.add('active');
-      tabUninstaller.setAttribute('aria-selected', 'true');
-      cleanupTabContent.hidden = true;
-      uninstallerTabContent.hidden = false;
-      loadApplications();
-    }
+    const map = {
+      cleanup:     [tabCleanup, cleanupTabContent],
+      uninstaller: [tabUninstaller, uninstallerTabContent],
+      files:       [tabFiles, filesTabContent],
+    };
+    Object.entries(map).forEach(([id, [btn, content]]) => {
+      const active = id === tabId;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      content.hidden = !active;
+    });
+    if (tabId === 'uninstaller') loadApplications();
+    if (tabId === 'files') renderFileList();
   }
 
   tabCleanup.addEventListener('click', () => showTab('cleanup'));
   tabUninstaller.addEventListener('click', () => showTab('uninstaller'));
+  tabFiles.addEventListener('click', () => showTab('files'));
+
+  /* ──────────────────────────────────────────────────────────
+     Dosyalar (cleanable files) tab
+     ────────────────────────────────────────────────────────── */
+  const filesSearch = $('#filesSearch');
+  const filesSort = $('#filesSort');
+  const filesList = $('#filesList');
+  const filesEmpty = $('#filesEmpty');
+  const filesCountEl = $('#filesCount');
+  const filesSelectedTotalEl = $('#filesSelectedTotal');
+  const btnCleanSelected = $('#btnCleanSelected');
+
+  function currentFileRows() {
+    const all = window.ScanUtil.flattenScan(scanData || {});
+    all.forEach((r) => { r.catName = CAT_BY_KEY[r.catKey]?.name || r.catKey; });
+    const [key, dir] = (filesSort?.value || 'size:desc').split(':');
+    return window.ScanUtil.sortRows(
+      window.ScanUtil.filterRows(all, filesQuery), key, dir);
+  }
+
+  function updateFilesTotal() {
+    const allRows = window.ScanUtil.flattenScan(scanData || {});
+    const total = window.ScanUtil.selectedTotalBytes(allRows, filesSelected);
+    filesSelectedTotalEl.textContent = formatBytes(total);
+    btnCleanSelected.disabled = filesSelected.size === 0;
+  }
+
+  function renderFileList() {
+    if (!scanData || !scanData.scan) {
+      filesList.innerHTML = '';
+      filesEmpty.hidden = false;
+      filesCountEl.textContent = 'Önce tarama yapın';
+      updateFilesTotal();
+      return;
+    }
+    const rows = currentFileRows();
+    filesEmpty.hidden = rows.length > 0;
+    filesCountEl.textContent = `${rows.length} dosya`;
+    filesList.innerHTML = '';
+    const badgeLabel = { danger: 'riskli', caution: 'dikkat', safe: 'güvenli' };
+    rows.forEach((r) => {
+      const li = document.createElement('li');
+      li.className = 'file-row';
+      const checked = filesSelected.has(r.rowId) ? 'checked' : '';
+      const ageStr = r.ageDays != null ? ` · ${r.ageDays}g` : '';
+      const pathStr = r.path ? ' · ' + escapeHtml(r.path) : '';
+      li.innerHTML = `
+        <input type="checkbox" data-row-id="${escapeAttr(r.rowId)}" ${checked}>
+        <span class="file-main">
+          <span class="file-name" title="${escapeAttr(r.name)}">${escapeHtml(r.name)}</span>
+          <span class="file-path">${escapeHtml(r.catName)}${ageStr}${pathStr}</span>
+        </span>
+        <span class="file-badge safety-${r.safety}">${badgeLabel[r.safety] || ''}</span>
+        <span class="file-size">${escapeHtml(r.sizeHuman || formatBytes(r.sizeBytes || 0))}</span>
+      `;
+      filesList.appendChild(li);
+    });
+    filesList.querySelectorAll('input[type="checkbox"]').forEach((cb) => {
+      cb.addEventListener('change', () => {
+        const id = cb.dataset.rowId;
+        if (cb.checked) filesSelected.add(id); else filesSelected.delete(id);
+        updateFilesTotal();
+      });
+    });
+    updateFilesTotal();
+  }
+
+  if (filesSearch) filesSearch.addEventListener('input', () => {
+    filesQuery = filesSearch.value; renderFileList();
+  });
+  if (filesSort) filesSort.addEventListener('change', renderFileList);
+  if ($('#filesSelectAll')) $('#filesSelectAll').addEventListener('click', () => {
+    currentFileRows().forEach((r) => filesSelected.add(r.rowId));
+    renderFileList();
+  });
+  if ($('#filesSelectNone')) $('#filesSelectNone').addEventListener('click', () => {
+    filesSelected.clear(); renderFileList();
+  });
 
   if (appsSearch) {
     appsSearch.addEventListener('input', () => {
