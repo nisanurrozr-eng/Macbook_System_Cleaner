@@ -167,7 +167,6 @@
      ────────────────────────────────────────────────────────── */
   let scanData = null;
   let isLoading = false;
-  let useMock = false;          // toggled after first failed fetch
   let termLineCount = 0;
   const accentByKey = Object.fromEntries(CATEGORIES.map((c) => [c.key, c.color]));
 
@@ -343,242 +342,24 @@
   }
 
   /* ──────────────────────────────────────────────────────────
-     API + mock
+     API
      ────────────────────────────────────────────────────────── */
   const CLEANUP_TOKEN =
     document.querySelector('meta[name="cleanup-token"]')?.content || '';
 
   async function apiFetch(url, options = {}) {
-    if (useMock) return mockApi(url, options);
-    try {
-      const res = await fetch(url, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Cleanup-Token': CLEANUP_TOKEN,
-          ...(options.headers || {}),
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      if (!data.success && data.error) throw new Error(data.error);
-      return data;
-    } catch (err) {
-      // First failure → switch to mock for the rest of the session
-      if (!useMock) {
-        useMock = true;
-        termLog('Sunucu erişilemez — demo verisiyle çalışıyor.', 'info');
-      }
-      return mockApi(url, options);
-    }
-  }
-
-  /* Mock API — realistic numbers a typical Mac might see */
-  async function mockApi(url, options = {}) {
-    await new Promise((r) => setTimeout(r, url === '/api/scan' ? 1200 : 450));
-
-    if (url === '/api/status') {
-      return {
-        success: true,
-        macos_version: 'Sequoia 15.4',
-        user: 'ahmet',
-        disk_free: '184 GB',
-        disk_used_pct: 62,
-      };
-    }
-
-    if (url === '/api/forecast') {
-      return {
-        success: true,
-        days_until_full: 47,
-        daily_growth_bytes: 2.1 * 1024 * 1024 * 1024,
-        history_points: 36,
-        history_span_days: 18,
-        total_bytes: 500 * 1024 * 1024 * 1024,
-        used_bytes: 316 * 1024 * 1024 * 1024,
-        free_bytes: 184 * 1024 * 1024 * 1024,
-      };
-    }
-
-    if (url === '/api/scan') {
-      const sizes = {
-        user_cache:      2.4 * 1024 * 1024 * 1024,
-        system_cache:    680 * 1024 * 1024,
-        app_leftovers:   1.1 * 1024 * 1024 * 1024,
-        logs:            410 * 1024 * 1024,
-        temp_files:      920 * 1024 * 1024,
-        developer:       6.8 * 1024 * 1024 * 1024,
-        trash:           3.2 * 1024 * 1024 * 1024,
-        browser_cache:   1.6 * 1024 * 1024 * 1024,
-        browser_full:    3.8 * 1024 * 1024 * 1024,
-        ios_backups:     12.4 * 1024 * 1024 * 1024,
-        app_uninstaller: 4.2 * 1024 * 1024 * 1024,
-        mail_downloads:  350 * 1024 * 1024,
-        project_artifacts: 8.9 * 1024 * 1024 * 1024,
-      };
-      const total = Object.values(sizes).reduce((a, b) => a + b, 0);
-      const scan = {};
-      Object.entries(sizes).forEach(([k, v]) => {
-        scan[k] = { size_bytes: v, size_human: formatBytes(v) };
-      });
-      // Sub-items for select categories
-      scan.app_leftovers.subitems = [
-        { id: 'Slack',           name: 'Slack',             size_human: '420 MB', is_orphaned: true },
-        { id: 'Zoom',            name: 'zoom.us',           size_human: '380 MB', is_orphaned: false },
-        { id: 'OldApp',          name: 'Pixelmator Pro',    size_human: '210 MB', is_orphaned: true },
-        { id: 'AnotherApp',      name: 'Notion Calendar',   size_human: '95 MB',  is_orphaned: false },
-      ];
-      scan.developer.subitems = [
-        { id: 'derived_data', name: 'Xcode DerivedData', size_human: '4.2 GB', size_bytes: 4509715660, detail: 'MyApp: 2.3 GB, ClientSDK: 1.1 GB, Playground: 480 MB +3 more', age_days: 124, is_orphaned: false },
-        { id: 'broken_links', name: 'Broken Symlinks', size_human: '12 items', is_orphaned: true },
-        { id: 'brew_cache', name: 'Homebrew Cache', size_human: '840 MB', is_orphaned: false },
-        { id: 'docker_prune', name: 'Docker Data', size_human: '2.1 GB', size_bytes: 2254857830, age_days: 72, is_orphaned: false },
-        { id: 'npm_cache', name: 'npm Cache', size_human: '120 MB', is_orphaned: false },
-        { id: 'pip_cache', name: 'pip Cache', size_human: '45 MB', is_orphaned: false },
-        { id: 'device_support', name: 'iOS DeviceSupport', size_human: '1.8 GB', is_orphaned: false },
-        { id: 'coresim_caches', name: 'CoreSimulator Caches', size_human: '320 MB', is_orphaned: false },
-        { id: 'xcode_archives', name: 'Xcode Archives', size_human: '3.4 GB', is_orphaned: false },
-        { id: 'cocoapods_cache', name: 'CocoaPods Cache', size_human: '150 MB', is_orphaned: false },
-        { id: 'pnpm_cache', name: 'pnpm Store', size_human: '280 MB', is_orphaned: false },
-        { id: 'yarn_cache', name: 'Yarn Cache', size_human: '90 MB', is_orphaned: false },
-        { id: 'gradle_cache', name: 'Gradle Cache', size_human: '650 MB', is_orphaned: false },
-        { id: 'maven_repo', name: 'Maven Repository', size_human: '420 MB', is_orphaned: false },
-        { id: 'simctl_unavailable', name: 'Delete Unavailable Simulators', size_human: 'Action', is_orphaned: false },
-        { id: 'xcode_products', name: 'Xcode Products', size_human: '1.2 GB', is_orphaned: false },
-        { id: 'simulator_logs', name: 'Simulator Logs', size_human: '12 MB', is_orphaned: false },
-        { id: 'simulator_devices', name: 'Simulator Devices', size_human: '4.8 GB', is_orphaned: false },
-        { id: 'font_caches', name: 'Font Caches', size_human: '64 MB', is_orphaned: false },
-        { id: 'brew_cleanup', name: 'Homebrew Cleanup (brew cleanup -s)', size_human: 'Action', is_orphaned: false },
-        { id: 'swift_pm_cache', name: 'Swift Package Manager Cache', size_human: '140 MB', is_orphaned: false },
-        { id: 'xcode_logs', name: 'Xcode Logs', size_human: '180 MB', is_orphaned: false },
-        { id: 'xcode_previews', name: 'Xcode Previews', size_human: '210 MB', is_orphaned: false },
-        { id: 'carthage_cache', name: 'Carthage Cache', size_human: '95 MB', is_orphaned: false },
-        { id: 'bun_cache', name: 'Bun Cache', size_human: '60 MB', is_orphaned: false },
-        { id: 'deno_cache', name: 'Deno Cache', size_human: '48 MB', is_orphaned: false },
-        { id: 'conda_pkgs', name: 'Conda Packages', size_human: '1.4 GB', is_orphaned: false },
-        { id: 'uv_cache', name: 'UV Cache', size_human: '220 MB', is_orphaned: false },
-        { id: 'poetry_cache', name: 'Poetry Cache', size_human: '180 MB', is_orphaned: false },
-        { id: 'go_modules', name: 'Go Module Cache', size_human: '780 MB', is_orphaned: false },
-        { id: 'cargo_registry', name: 'Rust Cargo Registry', size_human: '920 MB', is_orphaned: false },
-        { id: 'composer_cache', name: 'Composer Cache', size_human: '75 MB', is_orphaned: false },
-        { id: 'gradle_wrapper', name: 'Gradle Wrapper Dists', size_human: '410 MB', is_orphaned: false },
-        { id: 'sbt_ivy_cache', name: 'SBT/Ivy Cache', size_human: '530 MB', is_orphaned: false },
-        { id: 'bazel_cache', name: 'Bazel Cache', size_human: '2.3 GB', is_orphaned: false },
-        { id: 'flutter_pub_cache', name: 'Flutter/Pub Cache', size_human: '640 MB', is_orphaned: false },
-        { id: 'jetbrains_cache', name: 'JetBrains Cache', size_human: '480 MB', is_orphaned: false },
-        { id: 'playwright_cache', name: 'Playwright Browsers', size_human: '1.1 GB', is_orphaned: false },
-        { id: 'puppeteer_cache', name: 'Puppeteer Browsers', size_human: '360 MB', is_orphaned: false },
-        { id: 'prisma_cache', name: 'Prisma Engines', size_human: '140 MB', is_orphaned: false },
-        { id: 'huggingface_cache', name: 'HuggingFace Cache', size_human: '5.8 GB', is_orphaned: false }
-      ];
-      scan.project_artifacts.subitems = [
-        { id: '/Users/ahmet/Code/old-react-app/node_modules', name: 'old-react-app', type: 'Node.js', path: '/Users/ahmet/Code/old-react-app/node_modules', size_human: '1.2 GB', days_since: 142, is_orphaned: true },
-        { id: '/Users/ahmet/Developer/rust-cli/target', name: 'rust-cli', type: 'Rust', path: '/Users/ahmet/Developer/rust-cli/target', size_human: '3.4 GB', days_since: 88, is_orphaned: true },
-        { id: '/Users/ahmet/Projects/legacy-go/vendor', name: 'legacy-go', type: 'Go', path: '/Users/ahmet/Projects/legacy-go/vendor', size_human: '640 MB', days_since: 200, is_orphaned: true },
-        { id: '/Users/ahmet/Code/active-app/node_modules', name: 'active-app', type: 'Node.js', path: '/Users/ahmet/Code/active-app/node_modules', size_human: '890 MB', days_since: 3, is_orphaned: false },
-        { id: '/Users/ahmet/Developer/MyApp/.build', name: 'MyApp', type: 'Swift', path: '/Users/ahmet/Developer/MyApp/.build', size_human: '2.1 GB', days_since: 12, is_orphaned: false },
-      ];
-      scan.browser_full.subitems = [
-        { id: 'Safari Profile', name: 'Safari profili',  size_human: '1.8 GB' },
-        { id: 'Chrome Profile', name: 'Chrome profili',  size_human: '1.4 GB' },
-        { id: 'Firefox Profile', name: 'Firefox profili', size_human: '620 MB' },
-      ];
-      scan.ios_backups.subitems = [
-        { id: 'aaaa1111', name: 'iPhone 15 Pro — 2024-12-04', size_human: '6.8 GB' },
-        { id: 'bbbb2222', name: 'iPad Pro — 2024-09-22',       size_human: '5.1 GB' },
-        { id: 'cccc3333', name: 'iPhone 13 — 2023-06-12',      size_human: '512 MB' },
-      ];
-      scan.app_uninstaller.subitems = [
-        { id: 'Slack',          name: 'Slack',          bundle_id: 'com.tinyspeck.slackmacgap', size_human: '1.2 GB' },
-        { id: 'Zoom',           name: 'Zoom',           bundle_id: 'us.zoom.xos',              size_human: '850 MB' },
-        { id: 'Spotify',        name: 'Spotify',        bundle_id: 'com.spotify.client',       size_human: '680 MB' },
-        { id: 'Microsoft Word', name: 'Microsoft Word', bundle_id: 'com.microsoft.Word',       size_human: '1.5 GB' },
-      ];
-      scan.mail_downloads.subitems = [
-        { id: 'report.pdf',  name: 'report.pdf',  size_human: '140 MB' },
-        { id: 'photo.jpg',   name: 'photo.jpg',   size_human: '85 MB'  },
-        { id: 'archive.zip', name: 'archive.zip', size_human: '125 MB' },
-      ];
-
-      return {
-        success: true,
-        macos_version: 'Sequoia 15.4',
-        user: 'ahmet',
-        disk_free: '184 GB',
-        disk_used_pct: 62,
-        total_bytes: total,
-        total_human: formatBytes(total),
-        scan,
-      };
-    }
-
-    if (url === '/api/clean') {
-      const payload = JSON.parse(options.body || '{}');
-      const cats = payload.categories || [];
-      let freed = 0;
-      const details = [];
-      cats.forEach((idx) => {
-        const key = KEY_BY_INDEX[idx];
-        const size = (scanData && scanData.scan[key]?.size_bytes) || 0;
-        if (size > 0) {
-          details.push({ category: key, freed: formatBytes(size) });
-          freed += size;
-        }
-      });
-      return {
-        success: true,
-        freed_bytes: freed,
-        freed_human: formatBytes(freed),
-        items_cleaned: cats.length,
-        disk_free: formatBytes((184 * 1024 * 1024 * 1024) + freed),
-        details,
-        errors: [],
-      };
-    }
-
-    if (url === '/api/spotlight-reindex') {
-      return { success: true };
-    }
-
-    if (url === '/api/flush-dns') {
-      return { success: true, message: 'DNS önbelleği temizlendi.' };
-    }
-
-    if (url === '/api/purge-ram') {
-      return { success: true, message: 'RAM önbelleği boşaltıldı.' };
-    }
-
-    if (url === '/api/launchagents-clean') {
-      return { success: true, removed: 3, errors: 0 };
-    }
-
-    if (url === '/api/thin-snapshots') {
-      return { success: true, snapshots_before: 2, snapshots_after: 0, note: 'ok', disk_free: '184 GB' };
-    }
-
-    if (url === '/api/apps') {
-      return {
-        success: true,
-        apps: [
-          { id: 'slack', name: 'Slack', folder_name: 'Slack', path: '/Applications/Slack.app', size_bytes: 420000000, size_human: '420.0 MB', source: 'both', bundle_id: 'com.tinyspeck.slackmacgap', version: '4.35.1' },
-          { id: 'zoom.us', name: 'Zoom', folder_name: 'zoom.us', path: '/Applications/zoom.us.app', size_bytes: 380000000, size_human: '380.0 MB', source: 'app_dir', bundle_id: 'us.zoom.xos', version: '5.16.2' },
-          { id: 'spotify', name: 'Spotify', folder_name: 'Spotify', path: '/Applications/Spotify.app', size_bytes: 280000000, size_human: '280.0 MB', source: 'both', bundle_id: 'com.spotify.client', version: '1.2.22' },
-          { id: 'discord', name: 'Discord', folder_name: 'Discord', path: '/Applications/Discord.app', size_bytes: 310000000, size_human: '310.0 MB', source: 'both', bundle_id: 'com.hnc.Discord', version: '0.0.290' },
-          { id: 'visual-studio-code', name: 'Visual Studio Code', folder_name: 'Visual Studio Code', path: '/Applications/Visual Studio Code.app', size_bytes: 850000000, size_human: '850.0 MB', source: 'both', bundle_id: 'com.microsoft.VSCode', version: '1.85.1' },
-          { id: 'lm-studio', name: 'LM Studio', folder_name: 'LM Studio', path: '/Applications/LM Studio.app', size_bytes: 1200000000, size_human: '1.2 GB', source: 'app_dir', bundle_id: 'ai.lmstudio.lmstudio', version: '0.2.16' },
-          { id: 'claude', name: 'Claude', folder_name: 'Claude', path: '/Applications/Claude.app', size_bytes: 140000000, size_human: '140.0 MB', source: 'app_dir', bundle_id: 'com.anthropic.claude', version: '0.7.0' }
-        ]
-      };
-    }
-
-    if (url === '/api/uninstall') {
-      return {
-        success: true,
-        details: 'Mock uninstallation completed successfully.'
-      };
-    }
-
-    return { success: true };
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Cleanup-Token': CLEANUP_TOKEN,
+        ...(options.headers || {}),
+      },
+    });
+    if (!res.ok) throw new Error(`Sunucu hatası (HTTP ${res.status})`);
+    const data = await res.json();
+    if (!data.success && data.error) throw new Error(data.error);
+    return data;
   }
 
   /* ──────────────────────────────────────────────────────────
@@ -715,7 +496,7 @@
     } catch (err) {
       termLog(`Tarama hatası: ${err.message}`, 'error');
       el.hero.setAttribute('data-state', 'idle');
-      el.heroEyebrow.textContent = 'Hata · Tarama tamamlanamadı';
+      el.heroEyebrow.textContent = 'Sunucu çalışmıyor · Tarama yapılamadı';
     } finally {
       setLoading(el.btnScan, false);
       isLoading = false;
