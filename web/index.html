@@ -234,6 +234,12 @@
       <!-- Right: animated disk donut -->
       <div class="hero-right" aria-hidden="true">
         <svg class="donut" viewBox="0 0 200 200">
+          <defs>
+            <linearGradient id="donutGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="var(--accent-2)"/>
+              <stop offset="1" stop-color="var(--accent)"/>
+            </linearGradient>
+          </defs>
           <circle class="donut-track" cx="100" cy="100" r="78" fill="none" stroke-width="14"/>
           <circle class="donut-fill" id="donutFill" cx="100" cy="100" r="78" fill="none" stroke-width="14" stroke-linecap="round" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 100 100)"/>
           <g class="donut-label">
