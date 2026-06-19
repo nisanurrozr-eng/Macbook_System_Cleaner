@@ -541,7 +541,7 @@ OPLOG_MAX_BYTES="${APPLE_CLEANUP_OPLOG_MAX_BYTES:-5242880}"
 # action: trash (recoverable) | delete (permanent). Never fails the caller.
 oplog_record() {
   [ "${APPLE_CLEANUP_NO_OPLOG:-0}" = "1" ] && return 0
-  [ "$DRYRUN" = "1" ] && return 0
+  [ "${DRYRUN:-0}" = "1" ] && return 0
   local action="$1" bytes="$2" path="$3" category="${4:-}"
   # Keep each record single-line: collapse tabs/newlines in the path to spaces.
   path="${path//$'\t'/ }"

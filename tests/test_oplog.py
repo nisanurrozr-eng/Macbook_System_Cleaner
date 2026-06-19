@@ -44,3 +44,20 @@ def test_opt_out_writes_nothing(tmp_path):
     _run_record(tmp_path, "trash", "1", "/tmp/x", "logs",
                 env_extra={"APPLE_CLEANUP_NO_OPLOG": "1"})
     assert not _log_path(tmp_path).exists()
+
+
+def test_rotation_truncates_when_over_cap(tmp_path):
+    # Pre-fill the log past a tiny cap, then record once; the writer should
+    # rotate to the most recent half before appending, keeping it bounded.
+    log = _log_path(tmp_path)
+    log.parent.mkdir(parents=True)
+    log.write_text("".join(f"{i}\ttrash\t10\t/tmp/p{i}\tlogs\n" for i in range(200)))
+    before = len(log.read_text().splitlines())
+    _run_record(tmp_path, "trash", "10", "/tmp/new", "logs",
+                env_extra={"APPLE_CLEANUP_OPLOG_MAX_BYTES": "200"})
+    after_lines = log.read_text().splitlines()
+    # Rotated to ~half the old size, plus the one new record, and far below the original.
+    assert len(after_lines) < before
+    # The newest record survived, the oldest were dropped.
+    assert after_lines[-1].split("\t")[3] == "/tmp/new"
+    assert after_lines[0].split("\t")[0] != "0"
