@@ -73,6 +73,42 @@ def test_dry_run_records_nothing(tmp_path):
     assert not _log_path(tmp_path).exists()
 
 
+def test_force_rm_records_delete_action(tmp_path):
+    # APPLE_CLEANUP_FORCE_RM=1 bypasses trash-first, so the permanent-delete
+    # branch runs and must record action "delete".
+    victim = tmp_path / "Library" / "Caches" / "com.example.app"
+    victim.mkdir(parents=True)
+    (victim / "blob.bin").write_bytes(b"x" * 4096)
+    env = dict(os.environ, HOME=str(tmp_path), APPLE_CLEANUP_FORCE_RM="1")
+    cmd = (f'source "{SCRIPT}" >/dev/null 2>&1; '
+           f'safe_rm "{victim}" "Example" >/dev/null 2>&1; true')
+    out = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    lines = _log_path(tmp_path).read_text().splitlines()
+    assert len(lines) == 1
+    assert lines[0].split("\t")[1] == "delete"
+
+
+def test_exclusion_path_no_double_count(tmp_path):
+    # With an exclusion list set, safe_rm_contents delegates to safe_rm per
+    # child (each records once) and must NOT add its own record. N children
+    # must produce exactly N lines, never N+1.
+    (tmp_path / ".Trash").mkdir()
+    parent = tmp_path / "Library" / "Caches" / "bucket"
+    parent.mkdir(parents=True)
+    for i in range(3):
+        child = parent / f"child{i}"
+        child.mkdir()
+        (child / "blob.bin").write_bytes(b"x" * 1024)
+    env = dict(os.environ, HOME=str(tmp_path), APPLE_CLEANUP_EXCLUDE="/nonexistent-protect")
+    cmd = (f'source "{SCRIPT}" >/dev/null 2>&1; '
+           f'safe_rm_contents "{parent}" "Bucket" >/dev/null 2>&1; true')
+    out = subprocess.run(["bash", "-c", cmd], env=env, capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    lines = _log_path(tmp_path).read_text().splitlines()
+    assert len(lines) == 3, lines  # exactly one per child, no summary double-count
+
+
 def test_rotation_truncates_when_over_cap(tmp_path):
     # Pre-fill the log past a tiny cap, then record once; the writer should
     # rotate to the most recent half before appending, keeping it bounded.
