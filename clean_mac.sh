@@ -61,6 +61,8 @@ L() {
     en::deleted)              echo "deleted" ;;
     tr::trashed)              echo "çöpe taşındı" ;;
     en::trashed)              echo "moved to trash" ;;
+    tr::restore_done)         echo "Geri yükleme tamamlandı." ;;
+    en::restore_done)         echo "Restore complete." ;;
     tr::would_remove)         echo "kaldırılacaktı (deneme)" ;;
     en::would_remove)         echo "would remove (dry-run)" ;;
     tr::excluded)             echo "hariç tutuldu (korumalı)" ;;
@@ -2645,6 +2647,73 @@ do_ops_json() {
         }'
 }
 
+do_restore_json() {
+  JSON_MODE=true
+  local mode="$1" selector="$2"
+  local restored="" skipped="" failed=""
+  if [ ! -f "$OPLOG_FILE" ]; then
+    printf '{"success":true,"restored":[],"skipped":[],"failed":[]}\n'; return 0
+  fi
+  # Build a quick membership test for explicit item ids.
+  local want_ids=",$selector,"
+  local id ts session action bytes source dest category nf
+  while IFS=$'\t' read -r id rest; do
+    # Bash 3.2's `read`/array splitting collapses empty fields with custom
+    # IFS, so fields are extracted via awk (which handles empty fields
+    # correctly) rather than `read`, mirroring do_ops_json.
+    nf=$(awk -F'\t' '{print NF}' <<<"$rest")
+    if [ "$nf" -eq 7 ]; then
+      ts=$(awk -F'\t' '{print $1}' <<<"$rest")
+      session=$(awk -F'\t' '{print $2}' <<<"$rest")
+      action=$(awk -F'\t' '{print $3}' <<<"$rest")
+      bytes=$(awk -F'\t' '{print $4}' <<<"$rest")
+      source=$(awk -F'\t' '{print $5}' <<<"$rest")
+      dest=$(awk -F'\t' '{print $6}' <<<"$rest")
+      category=$(awk -F'\t' '{print $7}' <<<"$rest")
+    else
+      continue   # legacy 5-col lines are never restorable
+    fi
+    [ -z "$ts" ] && continue
+    # Selection filter
+    if [ "$mode" = "session" ]; then
+      [ "$session" = "$selector" ] || continue
+    else
+      case "$want_ids" in *",$id,"*) : ;; *) continue ;; esac
+    fi
+    local esc_src; esc_src=$(json_escape_str "$source")
+    if [ "$action" != "trash" ]; then
+      skipped="$skipped${skipped:+,}{\"source\":\"$esc_src\",\"reason\":\"not_recoverable\"}"; continue
+    fi
+    # Guard: protected/system source
+    case "$source" in
+      /System/*|/usr/*|/bin/*|/sbin/*|/etc/*|/private/etc/*)
+        skipped="$skipped${skipped:+,}{\"source\":\"$esc_src\",\"reason\":\"protected\"}"; continue ;;
+    esac
+    # Trash item gone
+    if [ -z "$dest" ] || [ ! -e "$dest" ]; then
+      skipped="$skipped${skipped:+,}{\"source\":\"$esc_src\",\"reason\":\"trash_missing\"}"; continue
+    fi
+    # Parent dir gone
+    local parent; parent="$(dirname "$source")"
+    if [ ! -d "$parent" ]; then
+      skipped="$skipped${skipped:+,}{\"source\":\"$esc_src\",\"reason\":\"parent_missing\"}"; continue
+    fi
+    # Collision -> rename
+    local target="$source" reason="ok"
+    if [ -e "$source" ]; then
+      target="$source (restored)"; reason="renamed"
+    fi
+    if mv "$dest" "$target" 2>/dev/null; then
+      oplog_record "restore" "$bytes" "$target" "" "$category"
+      restored="$restored${restored:+,}{\"source\":\"$(json_escape_str "$target")\",\"reason\":\"$reason\"}"
+    else
+      failed="$failed${failed:+,}{\"source\":\"$esc_src\",\"reason\":\"move_failed\"}"
+    fi
+  done < <(awk '{printf "%d\t%s\n", NR, $0}' "$OPLOG_FILE")
+  printf '{"success":true,"restored":[%s],"skipped":[%s],"failed":[%s]}\n' \
+    "$restored" "$skipped" "$failed"
+}
+
 do_flush_dns() {
   JSON_MODE=true
   local ok=true
@@ -2976,6 +3045,12 @@ main() {
         do_ops_json
         exit 0
         ;;
+      --restore-session)
+        i=$((i + 1)); do_restore_json session "${args[$i]}"; exit 0
+        ;;
+      --restore-items)
+        i=$((i + 1)); do_restore_json items "${args[$i]}"; exit 0
+        ;;
       --purge-ram)
         do_purge_ram
         exit 0
@@ -3015,6 +3090,8 @@ main() {
         echo "  --status-json            System status as JSON"
         echo "  --thin-snapshots-json    Thin local TM snapshots, return JSON"
         echo "  --ops-json               List restorable operations as JSON"
+        echo "  --restore-session <id>   Restore all recoverable items in a run"
+        echo "  --restore-items <i,j>    Restore specific operation ids"
         echo "  --flush-dns              Flush DNS cache"
         echo "  --purge-ram              Purge RAM cache"
         echo "  --launchagents-clean     Clean invalid LaunchAgents"
