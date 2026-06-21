@@ -2565,6 +2565,72 @@ scan_project_artifacts_subitems_json() {
 
 # ─── Special Action Handlers ────────────────────────────────────────────────
 
+# Emit recent operations grouped by session as JSON for the web UI.
+do_ops_json() {
+  JSON_MODE=true
+  if [ ! -f "$OPLOG_FILE" ]; then
+    printf '{"success":true,"sessions":[]}\n'; return 0
+  fi
+  while IFS=$'\t' read -r id rest; do
+    local ts session action bytes source dest category recoverable nf
+    # Bash 3.2's `read`/array splitting collapses empty fields with custom
+    # IFS, so fields are extracted via awk (which handles empty fields
+    # correctly) rather than `read`.
+    nf=$(awk -F'\t' '{print NF}' <<<"$rest")
+    if [ "$nf" -eq 7 ]; then
+      ts=$(awk -F'\t' '{print $1}' <<<"$rest")
+      session=$(awk -F'\t' '{print $2}' <<<"$rest")
+      action=$(awk -F'\t' '{print $3}' <<<"$rest")
+      bytes=$(awk -F'\t' '{print $4}' <<<"$rest")
+      source=$(awk -F'\t' '{print $5}' <<<"$rest")
+      dest=$(awk -F'\t' '{print $6}' <<<"$rest")
+      category=$(awk -F'\t' '{print $7}' <<<"$rest")
+    else
+      # legacy 5-col line: ts action bytes path category
+      ts=$(awk -F'\t' '{print $1}' <<<"$rest")
+      action=$(awk -F'\t' '{print $2}' <<<"$rest")
+      bytes=$(awk -F'\t' '{print $3}' <<<"$rest")
+      source=$(awk -F'\t' '{print $4}' <<<"$rest")
+      category=$(awk -F'\t' '{print $5}' <<<"$rest")
+      session="legacy"; dest=""
+    fi
+    [ -z "$ts" ] && continue
+    case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
+    recoverable=false
+    if [ "$action" = "trash" ] && [ -n "$dest" ] && [ -e "$dest" ]; then
+      local parent; parent="$(dirname "$source")"
+      { [ ! -e "$source" ] || [ -d "$parent" ]; } && recoverable=true
+    fi
+    local esc_src esc_dest esc_cat
+    esc_src=$(json_escape_str "$source"); esc_dest=$(json_escape_str "$dest")
+    esc_cat=$(json_escape_str "$category")
+    local item
+    item="{\"id\":$id,\"source\":\"$esc_src\",\"trash_dest\":\"$esc_dest\",\"bytes\":${bytes:-0},\"category\":\"$esc_cat\",\"action\":\"$action\",\"recoverable\":$recoverable}"
+    # Stash: SESSION<TAB>TS<TAB>BYTES<TAB>REC<TAB>ITEMJSON
+    printf '%s\t%s\t%s\t%s\t%s\n' "$session" "${ts:-0}" "${bytes:-0}" "$recoverable" "$item"
+  done < <(awk '{printf "%d\t%s\n", NR, $0}' "$OPLOG_FILE") \
+    | awk -F'\t' '
+        { sess=$1; ts=$2; by=$3; rec=$4; item=$5;
+          if (!(sess in firstts)) { order[++k]=sess; firstts[sess]=ts }
+          if (ts+0 < firstts[sess]+0) firstts[sess]=ts;
+          tot[sess]+=by; cnt[sess]++; if (rec=="true") reccnt[sess]++;
+          items[sess]=items[sess] (items[sess]==""?"":",") item;
+        }
+        END {
+          printf "{\"success\":true,\"sessions\":[";
+          # newest session first: order[] is file order (old->new); reverse it, cap 20.
+          first=1; printed=0;
+          for (j=k; j>=1 && printed<20; j--) {
+            s=order[j];
+            if (!first) printf ","; first=0;
+            printf "{\"session_id\":\"%s\",\"start_ts\":%d,\"total_bytes\":%d,\"item_count\":%d,\"recoverable_count\":%d,\"items\":[%s]}",
+              s, firstts[s], tot[s], cnt[s], (reccnt[s]+0), items[s];
+            printed++;
+          }
+          printf "]}\n";
+        }'
+}
+
 do_flush_dns() {
   JSON_MODE=true
   local ok=true
@@ -2892,6 +2958,10 @@ main() {
         do_flush_dns
         exit 0
         ;;
+      --ops-json)
+        do_ops_json
+        exit 0
+        ;;
       --purge-ram)
         do_purge_ram
         exit 0
@@ -2930,6 +3000,7 @@ main() {
         echo "  --project-artifact-sub 'p1,p2' Project artifact paths to delete"
         echo "  --status-json            System status as JSON"
         echo "  --thin-snapshots-json    Thin local TM snapshots, return JSON"
+        echo "  --ops-json               List restorable operations as JSON"
         echo "  --flush-dns              Flush DNS cache"
         echo "  --purge-ram              Purge RAM cache"
         echo "  --launchagents-clean     Clean invalid LaunchAgents"
