@@ -166,6 +166,29 @@ def test_history_json_newest_first_with_fields(tmp_path):
     assert rows[1]["path"] == "/tmp/old"
 
 
+def test_history_json_v2_seven_col_line_parses_correctly(tmp_path):
+    # v2 format: ts, session_id, action, bytes, source, trash_dest, category.
+    # The reader must not parse this positionally as 5 columns (which would
+    # land session_id in "action" and bytes in "path").
+    log = _log_path(tmp_path)
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "1700000000\tsessABC\ttrash\t1024\t/Users/x/junk\t/Users/x/.Trash/junk\ttestcat\n"
+    )
+    env = dict(os.environ, HOME=str(tmp_path))
+    out = subprocess.run(["bash", str(SCRIPT), "--history-json"],
+                         env=env, capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    rows = json.loads(out.stdout)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["action"] == "trash"
+    assert row["bytes"] == 1024
+    assert row["path"] == "/Users/x/junk"  # source column (5th), not trash_dest
+    assert row["category"] == "testcat"
+    assert row["recoverable"] is True
+
+
 def test_history_json_skips_malformed_lines(tmp_path):
     log = _log_path(tmp_path)
     log.parent.mkdir(parents=True)

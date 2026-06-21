@@ -1902,8 +1902,18 @@ do_history_json() {
   echo -n "["
   local first=true
   if [ -f "$OPLOG_FILE" ]; then
-    local ts action bytes path category recoverable size_h
-    while IFS=$'\t' read -r ts action bytes path category; do
+    local line ts session action bytes path dest category recoverable size_h nf
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      nf=$(awk -F'\t' '{print NF}' <<<"$line")
+      if [ "$nf" -eq 7 ]; then
+        IFS=$'\t' read -r ts session action bytes path dest category <<<"$line"
+      elif [ "$nf" -eq 5 ]; then
+        IFS=$'\t' read -r ts action bytes path category <<<"$line"
+        session=""; dest=""
+      else
+        continue
+      fi
       [ -z "$ts" ] && continue
       case "$ts" in *[!0-9]*) continue ;; esac
       case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
@@ -1928,8 +1938,18 @@ do_history() {
     return 0
   fi
   printf "  %-19s  %-9s  %-10s  %-14s  %s\n" "When" "Action" "Size" "Category" "Path"
-  local ts action bytes path category when size_h tag
-  while IFS=$'\t' read -r ts action bytes path category; do
+  local line ts session action bytes path dest category when size_h tag nf
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    nf=$(awk -F'\t' '{print NF}' <<<"$line")
+    if [ "$nf" -eq 7 ]; then
+      IFS=$'\t' read -r ts session action bytes path dest category <<<"$line"
+    elif [ "$nf" -eq 5 ]; then
+      IFS=$'\t' read -r ts action bytes path category <<<"$line"
+      session=""; dest=""
+    else
+      continue
+    fi
     [ -z "$ts" ] && continue
     case "$ts" in *[!0-9]*) continue ;; esac
     case "$bytes" in ''|*[!0-9]*) bytes=0 ;; esac
