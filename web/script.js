@@ -1103,7 +1103,7 @@
           <span class="history-size">${escapeHtml(String(run.item_count || 0))} items</span>
           <span class="history-cat">${escapeHtml(formatBytes(run.total_bytes || 0))}</span>
           ${badge}
-          <button type="button" class="btn btn-sm btn-restore-run" data-session="${escapeHtml(String(run.session_id))}" ${disabled}>Restore run</button>
+          <button type="button" class="btn btn-sm btn-restore-run" data-session="${escapeAttr(String(run.session_id))}" ${disabled}>Restore run</button>
         </div>`;
       }).join('');
     } catch (e) {

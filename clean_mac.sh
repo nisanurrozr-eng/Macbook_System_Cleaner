@@ -61,8 +61,6 @@ L() {
     en::deleted)              echo "deleted" ;;
     tr::trashed)              echo "çöpe taşındı" ;;
     en::trashed)              echo "moved to trash" ;;
-    tr::restore_done)         echo "Geri yükleme tamamlandı." ;;
-    en::restore_done)         echo "Restore complete." ;;
     tr::would_remove)         echo "kaldırılacaktı (deneme)" ;;
     en::would_remove)         echo "would remove (dry-run)" ;;
     tr::excluded)             echo "hariç tutuldu (korumalı)" ;;
