@@ -8,3 +8,4 @@ cleanup-log.txt
 diagnose-log.txt
 scan-out.json
 scan-err.txt
+scan-debug.txt

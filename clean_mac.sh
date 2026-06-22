@@ -17,6 +17,13 @@
 #   --lang en|tr            Set UI language (default: tr)
 set -euo pipefail
 
+# Force a dot decimal separator regardless of the user's regional locale.
+# `bc` always emits "6.3", but printf "%.1f" parses input using LC_NUMERIC — so
+# under a comma-decimal locale (e.g. tr_TR) it rejects "6.3" with
+# "printf: 6.3: invalid number", producing empty output and a failed scan.
+# LC_NUMERIC=C keeps numbers dot-based while leaving UTF-8 text handling intact.
+export LC_NUMERIC=C
+
 # ─── Localization Engine (Bash 3.2 compatible — no assoc arrays) ─────────────
 # Default language; override via --lang <code> or APPLE_CLEANUP_LANG env var
 LANG_KEY="${APPLE_CLEANUP_LANG:-tr}"
@@ -529,12 +536,16 @@ warn()    { echo -e "  ${YELLOW}⚠${NC}  $1"; }
 err()     { echo -e "  ${RED}✗${NC}  $1" >&2; }
 
 # ─── Size Helpers ────────────────────────────────────────────────────────────
+# Note: bc already rounds to one decimal with a dot ("6.3"), so we print it
+# with %s rather than feeding it back through printf "%.1f". The latter parses
+# its input using LC_NUMERIC and, under a comma-decimal locale (tr_TR etc.),
+# rejects "6.3" as "invalid number" — which previously emptied the scan output.
 format_bytes() {
   local b=$1
-  if   [ "$b" -ge 1099511627776 ]; then printf "%.1f TB" "$(echo "scale=1; $b/1099511627776" | bc)"
-  elif [ "$b" -ge 1073741824 ]; then printf "%.1f GB" "$(echo "scale=1; $b/1073741824" | bc)"
-  elif [ "$b" -ge 1048576 ];    then printf "%.1f MB" "$(echo "scale=1; $b/1048576"    | bc)"
-  elif [ "$b" -ge 1024 ];       then printf "%.1f KB" "$(echo "scale=1; $b/1024"       | bc)"
+  if   [ "$b" -ge 1099511627776 ]; then printf "%s TB" "$(echo "scale=1; $b/1099511627776" | bc)"
+  elif [ "$b" -ge 1073741824 ]; then printf "%s GB" "$(echo "scale=1; $b/1073741824" | bc)"
+  elif [ "$b" -ge 1048576 ];    then printf "%s MB" "$(echo "scale=1; $b/1048576"    | bc)"
+  elif [ "$b" -ge 1024 ];       then printf "%s KB" "$(echo "scale=1; $b/1024"       | bc)"
   else printf "%d B" "$b"; fi
 }
 
